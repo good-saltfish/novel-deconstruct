@@ -1,0 +1,47 @@
+name: 缺陷报告（Bug）
+description: 报告一个可复现的问题（切分错误、产物错误、CLI 异常等）
+title: "[Bug] "
+labels: ["type/bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请勿在 Issue 中粘贴版权小说原文；复现请使用 CC0 自造文本或脱敏片段。
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 命令：ndecon split ...
+        2. 输入：（脱敏/CC0 的最小复现文本）
+        3. 期望：
+        4. 实际：
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ndecon 版本与 Python 版本
+      placeholder: 例如 ndecon 0.1.0 / Python 3.10.4
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题模块
+      options:
+        - splitter（章节切分）
+        - providers（模型适配）
+        - pipeline（Stage 管道）
+        - render（产物渲染）
+        - cli
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 输出/告警信息
+      render: text
+    validations:
+      required: false

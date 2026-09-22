@@ -1,0 +1,26 @@
+name: 文档改进（Docs）
+description: README、CONTRIBUTING、ADR、注释等文档问题
+title: "[Docs] "
+labels: ["type/docs"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 需要改进的内容与原因
+      placeholder: 哪份文档、哪里有歧义/过时/缺失，读者因此会踩什么坑？
+    validations:
+      required: true
+  - type: dropdown
+    id: doc
+    attributes:
+      label: 文档位置
+      options:
+        - README.md
+        - CONTRIBUTING.md
+        - CHANGELOG.md
+        - docs/adr
+        - KANBAN.md
+        - 代码注释/docstring
+        - other
+    validations:
+      required: true

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "novel-deconstruct"
+version = "0.1.0"
+description = "本地优先的中文网文拆书 CLI：文本 -> 章节切分 -> 结构化拆书产物（Markdown + JSONL），模型可插拔、证据可追溯"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pydantic>=2",
+    "typer>=0.12",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+]
+
+[project.scripts]
+ndecon = "ndecon.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/ndecon"]
+branch = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/F 语法错误、I import 排序、UP 现代化语法、B 常见 bug、SIM 简化
+select = ["E", "F", "I", "UP", "B", "SIM"]

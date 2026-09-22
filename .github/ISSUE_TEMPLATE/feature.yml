@@ -1,0 +1,48 @@
+name: 功能需求（Feature）
+description: 提出一个可被验收的功能或改进，按用户故事格式描述
+title: "[Feature] "
+labels: ["type/feature"]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: 用户故事
+      description: 谁、想要什么、为什么（As a… I want… so that…）
+      placeholder: |
+        作为【使用者：拆书的网文作者】
+        我希望【具体能力】
+        以便【可感知的价值】
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 可测试的验收条件清单（Given/When/Then 或复选框）
+      placeholder: |
+        - [ ] 条件 1（可通过命令或测试验证）
+        - [ ] 条件 2
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 所属模块
+      options:
+        - splitter（章节切分）
+        - providers（模型适配）
+        - pipeline（Stage 管道）
+        - render（产物渲染）
+        - cli
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 约束与红线自查
+      description: 是否触碰确定性、证据、不代笔、版权等纪律？是否需要 ADR？
+      placeholder: 例如：不涉及切分确定性；若需新增受控词表会同步更新枚举与测试。
+    validations:
+      required: false

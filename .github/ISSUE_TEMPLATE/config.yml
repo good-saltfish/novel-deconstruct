@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 贡献流程与提问
+    url: https://example.com/CONTRIBUTING  # TODO: 远程启用后替换为仓库 CONTRIBUTING 链接
+    about: 提 Issue 前请先阅读 CONTRIBUTING.md；使用问题优先在 Discussions 讨论。
