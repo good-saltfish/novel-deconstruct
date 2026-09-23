@@ -1,0 +1,7 @@
+# sdist 分发清单（wheel 由 setuptools 自动收集包文件，许可证 56+ 自动入 wheel）
+include LICENSE
+include CHANGELOG.md
+include README.md
+recursive-include src *.py
+global-exclude *.py[cod]
+global-exclude __pycache__/*

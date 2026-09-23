@@ -14,6 +14,7 @@
 - 版本化 prompt（`oc-v0`），受控词表与枚举同源。
 - **Stage 3 跨章聚合（#3）**：纯确定性统计——逐章主导基调与基调分布、爽点章节与章距（均值/最大空窗）、全书主题分布、角色出场矩阵（章号去重+提及计数）；产物 `剧情/节奏.md` + `data/aggregation.jsonl`，可从 chapters.jsonl 完全重算。
 - **开源发布（#7）**：仓库公开于 GitHub；CI 五检查全绿（Python 3.10/3.11/3.12 + ruff + 仓库卫生）；main 分支保护；Issue #1–#13 编号锁定；CI 徽章上 README。行长按中文全角宽度设为 120。
+- **PyPI 发布准备（#8）**：包名 novel-deconstruct 核验可用；补全发布元数据（classifiers/项目链接/关键词，PEP 639 SPDX 许可证表达式）；`python -m build` 产出 sdist+wheel，twine 校验通过；全新 venv 安装 wheel 后 `ndecon` 入口冒烟通过；CI 新增 package 构建校验 job；Release workflow 支持 tag 触发 OIDC 可信发布与手动仅构建演练；发布手册见 docs/releasing.md。
 
 ## [0.1.0] - 2026-09-22
 
