@@ -9,8 +9,9 @@
 
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
+| #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文 | type/feature priority/low |
-| #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | ruff 已本地安装且存量零告警；pre-commit install 待执行 | type/chore priority/low |
+| #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | ruff 0.16.8 已装、存量零告警；pre-commit install 待执行（HTTPS git 需走 SSH 改写） | type/chore priority/low |
 
 ## Icebox（不承诺排期，触发条件满足才进 Backlog）
 
