@@ -175,7 +175,8 @@ class OpenAICompatCreator:
                 "content": prompts.full_draft_user_message(title, genre, premise, reference_stats),
             },
         ]
-        data = self._provider._chat_json(messages)  # noqa: SLF001（同包复用，避免重复传输栈）
+        # 同包复用内部 JSON 通道，避免重复造传输栈
+        data = self._provider._chat_json(messages)  # noqa: SLF001
         try:
             return _draft_from_dict(data, self.model_id, self.prompt_version)
         except (KeyError, TypeError, ValueError) as exc:

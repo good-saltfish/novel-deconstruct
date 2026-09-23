@@ -1,0 +1,322 @@
+{
+  "version": 1,
+  "eval": "recall_at_k",
+  "k": 10,
+  "case_count": 16,
+  "macro_recall": 0.875,
+  "params": {
+    "tokenizer": "cjk-bigram-v1",
+    "k1": 1.5,
+    "b": 0.75,
+    "controlled_term_boost": 2.0
+  },
+  "cases": [
+    {
+      "case_id": "g1-well-beast",
+      "query": "影兽第一次从水井里爬出来",
+      "relevant_orders": [
+        3
+      ],
+      "retrieved_orders": [
+        3,
+        10,
+        1,
+        12,
+        2,
+        5,
+        6
+      ],
+      "hit_orders": [
+        3
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g2-substation-array",
+      "query": "影兽群夜袭配电站，点亮路灯布下灯阵守住电闸",
+      "relevant_orders": [
+        5
+      ],
+      "retrieved_orders": [
+        5,
+        3,
+        10,
+        12,
+        6,
+        9,
+        8,
+        1,
+        11,
+        4
+      ],
+      "hit_orders": [
+        5
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g3-follow-secret",
+      "query": "苏晓跟踪林盏进入旧城区，发现巡夜的秘密",
+      "relevant_orders": [
+        4
+      ],
+      "retrieved_orders": [
+        4,
+        1,
+        11,
+        7,
+        10,
+        9,
+        5,
+        8,
+        3,
+        12
+      ],
+      "hit_orders": [
+        4
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g4-fire-truth",
+      "query": "十年前封灯事故的大火真相",
+      "relevant_orders": [
+        6,
+        8
+      ],
+      "retrieved_orders": [
+        8,
+        6
+      ],
+      "hit_orders": [
+        6,
+        8
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g5-lamp-rekindle",
+      "query": "半截熄灭的铜灯重新点燃，看见过去的影像",
+      "relevant_orders": [
+        8
+      ],
+      "retrieved_orders": [
+        8,
+        7,
+        12,
+        4,
+        11,
+        3,
+        10,
+        1
+      ],
+      "hit_orders": [
+        8
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g6-manual-hidden",
+      "query": "巡夜手册藏在旧屋的什么地方",
+      "relevant_orders": [
+        7
+      ],
+      "retrieved_orders": [
+        7,
+        11,
+        6,
+        3,
+        2,
+        9
+      ],
+      "hit_orders": [
+        7
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g7-first-meeting",
+      "query": "林盏第一次遇见提铜灯的周伯",
+      "relevant_orders": [
+        1
+      ],
+      "retrieved_orders": [
+        1,
+        11,
+        3,
+        12,
+        8,
+        7,
+        2,
+        6,
+        10,
+        9
+      ],
+      "hit_orders": [
+        1
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g8-register-keeper",
+      "query": "管理处登记册把谁写成新任守灯人",
+      "relevant_orders": [
+        2
+      ],
+      "retrieved_orders": [
+        2,
+        12,
+        1,
+        10,
+        6,
+        8
+      ],
+      "hit_orders": [
+        2
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g9-beast-appearances",
+      "query": "影兽出现并袭击人的章节",
+      "relevant_orders": [
+        3,
+        5
+      ],
+      "retrieved_orders": [
+        1,
+        3,
+        5,
+        10,
+        12
+      ],
+      "hit_orders": [
+        3,
+        5
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g10-phone-record",
+      "query": "苏晓用手机拍下灯阵的画面",
+      "relevant_orders": [
+        5
+      ],
+      "retrieved_orders": [
+        5,
+        9,
+        8,
+        4,
+        12,
+        11,
+        6
+      ],
+      "hit_orders": [
+        5
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g11-forum-video",
+      "query": "苏晓把灯阵视频发到校园论坛，同学只当成特效",
+      "relevant_orders": [
+        9
+      ],
+      "retrieved_orders": [
+        9,
+        5,
+        4,
+        12,
+        11,
+        6,
+        8
+      ],
+      "hit_orders": [
+        9
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g12-pull-lamp",
+      "query": "施工队拔起灯柱，灯座下的影兽成群逃出",
+      "relevant_orders": [
+        10
+      ],
+      "retrieved_orders": [
+        10,
+        5,
+        12,
+        3,
+        7,
+        6,
+        9,
+        8
+      ],
+      "hit_orders": [
+        10
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g13-find-zhoubo",
+      "query": "在地下管廊的积水小屋里找到被困的周伯",
+      "relevant_orders": [
+        11
+      ],
+      "retrieved_orders": [
+        11,
+        7,
+        1,
+        2,
+        6,
+        12,
+        3,
+        8,
+        9
+      ],
+      "hit_orders": [
+        11
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g14-ten-thousand-lamps",
+      "query": "万灯齐明，影兽被逼回井底，危机平息",
+      "relevant_orders": [
+        12
+      ],
+      "retrieved_orders": [
+        12,
+        3,
+        5,
+        10
+      ],
+      "hit_orders": [
+        12
+      ],
+      "recall": 1.0
+    },
+    {
+      "case_id": "g15-hard-responsibility",
+      "query": "那场悲剧究竟是谁的过错",
+      "relevant_orders": [
+        8
+      ],
+      "retrieved_orders": [
+        6
+      ],
+      "hit_orders": [],
+      "recall": 0.0
+    },
+    {
+      "case_id": "g16-hard-protect-supply",
+      "query": "全城人晚上还能用上电，全靠他做了什么",
+      "relevant_orders": [
+        5
+      ],
+      "retrieved_orders": [],
+      "hit_orders": [],
+      "recall": 0.0
+    }
+  ]
+}

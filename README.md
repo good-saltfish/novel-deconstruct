@@ -48,7 +48,15 @@ ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --mod
 
 # 4) 本地创作面板（浏览器工作台：导入小说自动拆书 → 生成新长篇骨架）
 ndecon panel --workspace .ndecon-workspace --open
+
+# 5) 为创作项目重建 L1 一致性检索索引（中文 bigram BM25，纯本地离线，ADR-0004）
+ndecon reindex creation-mybook-1 --workspace .ndecon-workspace
 ```
+
+L1 检索只索引**本书**已确认的骨架部件（与后续已写章节的结构化摘要），
+参考书原文与 quote 在类型与代码两层都无法进入索引；
+金标基线见 `tests/fixtures/gold/`（CC0 自造小书，Macro Recall@10 = 0.875），
+向量检索（#13）唯有在该基线证明 bigram 不足时才允许解冻。
 
 浏览器打开后可以：导入小说文件（自动拆书入库，不复制原文）→ 新建长篇并勾选参考书
 → 一键生成题材定位/首卷纲要/前 10 章细纲/主角人设/金手指（含限制代价）→ 逐部件编辑确认。

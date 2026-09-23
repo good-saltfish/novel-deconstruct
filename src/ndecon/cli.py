@@ -14,6 +14,8 @@ from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
 from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.render.markdown import write_bundle, write_outline
+from ndecon.workspace.models import CreationProject
+from ndecon.workspace.store import WorkspaceStore
 
 app = typer.Typer(help="本地优先的中文网文拆书 CLI", no_args_is_help=True)
 
@@ -140,6 +142,31 @@ def panel(
         typer.echo("\n面板已停止")
     finally:
         server.server_close()
+
+
+@app.command()
+def reindex(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    workspace: Path = typer.Option(
+        Path(".ndecon-workspace"), "--workspace", help="项目工作区目录（项目 JSON 存放处）"
+    ),
+) -> None:
+    """为创作项目重建 L1 一致性检索索引（中文 bigram BM25，纯本地离线，#17）。"""
+    from ndecon.retrieval import build_project_index
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("reindex 仅支持创作项目；参考书项目不建立 L1 索引")
+    index = build_project_index(project)
+    store.write_project_artifact(project_id, "index.json", index.to_dict())
+    typer.secho(
+        f"索引完成：{len(index.documents)} 个文档 -> projects/{project_id}/index.json",
+        fg=typer.colors.GREEN,
+    )
 
 
 if __name__ == "__main__":

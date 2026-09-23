@@ -17,6 +17,7 @@
 - **PyPI 发布准备（#8）**：包名 novel-deconstruct 核验可用；补全发布元数据（classifiers/项目链接/关键词，PEP 639 SPDX 许可证表达式）；`python -m build` 产出 sdist+wheel，twine 校验通过；全新 venv 安装 wheel 后 `ndecon` 入口冒烟通过；CI 新增 package 构建校验 job；Release workflow 支持 tag 触发 OIDC 可信发布与手动仅构建演练；发布手册见 docs/releasing.md。
 - **本地项目面板（#15）**：`ndecon panel` 启动仅绑定 127.0.0.1 的 Web 工作台（stdlib http.server，零前端框架）；导入小说自动跑拆书管道入库（只存源路径与聚合 JSON，不复制原文）；新建长篇可挂参考书，FakeCreator 一键生成题材定位/首卷纲要/前 10 章细纲/主角人设/金手指（强制限制代价），学习注入仅传参考书聚合数字统计；模型产出为 draft、用户保存为 confirmed；新增 workspace/creation/panel 三个模块与 15 个测试（共 56 个全绿），面板静态资源打入 wheel 并经 CI 断言。
 - **ADR-0004 RAG 分层与引入门（#17）**：确立 L0 聚合数字（现状）→ L1 中文 bigram BM25 + 确定性上下文包（#17 启动，须随附 CC0 金标集与 Recall@10 基线）→ L2 向量混合（#13 冻结，金标不达标才解冻，限 sqlite-vec/numpy 且离线回退 L1）→ L3 实体图谱事件投影（#4 之后）的分层架构；通用引入门要求先有评测再加依赖、Fake-first 离线回退、学习型检索只出聚合数字不出原文。
+- **L1 一致性检索（#17）**：新增 `ndecon.retrieval` 模块——中文 bigram 分词（NFKC 归一，零词典零模型）、确定性 Okapi BM25（k1/b 固定、受控词表查询加权、JSON 可往返重算）；索引器只接受创作项目且只收已确认骨架部件 + 本书已写章节摘要，参考书类型级拒入、`SourceRef.quote` 结构性不读取；伏笔台账（只登记显式章尾钩，固定阈值字面重合判回收，不臆造）；`ContextPack` 确定性组装前章摘要（written 优先、outline 退化）+ top-k 相关回顾（排除本章）+ 开放伏笔。CC0 自造 12 章金标语料 + 16 条查询，**Macro Recall@10 基线 0.875**（14 条字面查询全中，2 条纯语义改写落空——bigram 已知短板，作为 #13 解冻依据），基线报告提交入库且 CI 逐字段比对重算结果；新增 `ndecon reindex` 命令与工作区产物白名单写入；共 96 个测试全绿。
 
 ## [0.1.0] - 2026-09-22
 

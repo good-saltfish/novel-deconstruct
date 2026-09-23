@@ -1,0 +1,86 @@
+{
+  "description": "《灯火守门人》CC0 金标语料的查询集：每条给出 query 与应召回章号，用于度量 bigram BM25 的 Recall@10。",
+  "license": "CC0-1.0",
+  "cases": [
+    {
+      "case_id": "g1-well-beast",
+      "query": "影兽第一次从水井里爬出来",
+      "relevant_orders": [3]
+    },
+    {
+      "case_id": "g2-substation-array",
+      "query": "影兽群夜袭配电站，点亮路灯布下灯阵守住电闸",
+      "relevant_orders": [5]
+    },
+    {
+      "case_id": "g3-follow-secret",
+      "query": "苏晓跟踪林盏进入旧城区，发现巡夜的秘密",
+      "relevant_orders": [4]
+    },
+    {
+      "case_id": "g4-fire-truth",
+      "query": "十年前封灯事故的大火真相",
+      "relevant_orders": [6, 8]
+    },
+    {
+      "case_id": "g5-lamp-rekindle",
+      "query": "半截熄灭的铜灯重新点燃，看见过去的影像",
+      "relevant_orders": [8]
+    },
+    {
+      "case_id": "g6-manual-hidden",
+      "query": "巡夜手册藏在旧屋的什么地方",
+      "relevant_orders": [7]
+    },
+    {
+      "case_id": "g7-first-meeting",
+      "query": "林盏第一次遇见提铜灯的周伯",
+      "relevant_orders": [1]
+    },
+    {
+      "case_id": "g8-register-keeper",
+      "query": "管理处登记册把谁写成新任守灯人",
+      "relevant_orders": [2]
+    },
+    {
+      "case_id": "g9-beast-appearances",
+      "query": "影兽出现并袭击人的章节",
+      "relevant_orders": [3, 5]
+    },
+    {
+      "case_id": "g10-phone-record",
+      "query": "苏晓用手机拍下灯阵的画面",
+      "relevant_orders": [5]
+    },
+    {
+      "case_id": "g11-forum-video",
+      "query": "苏晓把灯阵视频发到校园论坛，同学只当成特效",
+      "relevant_orders": [9]
+    },
+    {
+      "case_id": "g12-pull-lamp",
+      "query": "施工队拔起灯柱，灯座下的影兽成群逃出",
+      "relevant_orders": [10]
+    },
+    {
+      "case_id": "g13-find-zhoubo",
+      "query": "在地下管廊的积水小屋里找到被困的周伯",
+      "relevant_orders": [11]
+    },
+    {
+      "case_id": "g14-ten-thousand-lamps",
+      "query": "万灯齐明，影兽被逼回井底，危机平息",
+      "relevant_orders": [12]
+    },
+    {
+      "case_id": "g15-hard-responsibility",
+      "query": "那场悲剧究竟是谁的过错",
+      "relevant_orders": [8]
+    },
+    {
+      "case_id": "g16-hard-protect-supply",
+      "query": "全城人晚上还能用上电，全靠他做了什么",
+      "relevant_orders": [5]
+    }
+  ]
+}
