@@ -4,10 +4,8 @@
 
 如果你发现安全漏洞（例如提示词注入导致越权写文件、模型返回内容引发的路径穿越、不可信文本解析问题），**请不要公开提 Issue**。
 
-请通过以下方式私下报告（远程仓库启用后将补充 GitHub Private Vulnerability Reporting）：
-
-- 邮箱：`[INSERT SECURITY EMAIL]`（占位，发布前替换）
-- 请附上：复现步骤、影响评估、建议修复方式
+请通过 GitHub 的 **Privately Report a Vulnerability**（仓库 Security → Report a vulnerability）私下报告，
+并附上：复现步骤、影响评估、建议修复方式。
 
 我们会在 **7 天内**确认收到，并在修复发布后公开致谢（除非你希望匿名）。
 

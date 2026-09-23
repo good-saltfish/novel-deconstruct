@@ -1,5 +1,9 @@
 # novel-deconstruct（ndecon）
 
+[![CI](https://github.com/good-saltfish/novel-deconstruct/actions/workflows/ci.yml/badge.svg)](https://github.com/good-saltfish/novel-deconstruct/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](#)
+
 本地优先的**中文网文拆书 CLI**：喂给它一本小说的文本文件，它自动完成章节切分、逐章结构化摘要与黄金三章拆解，产出人读的 Markdown 与机读的 JSONL。模型可插拔——没有 API key 时用内置确定性 Fake Provider 也能跑通整条管道与测试。
 
 > 状态：v0.1 开发中。v0.1 只覆盖"章节切分 + Stage 0 索引 + Stage 2 逐章摘要 + Stage 1 黄金三章报告"；跨章聚合、设定关系、文风分析在 backlog。
