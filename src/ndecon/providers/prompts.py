@@ -17,10 +17,13 @@ PROMPT_VERSION = "oc-v0"
 _TONES = "、".join(t.value for t in Tone)
 _THEMES = "、".join(t.value for t in ThemeTag)
 
-_SYSTEM = f"""你是一名严谨的中文网络小说结构分析编辑。你的任务是把指定章节拆解为结构化数据，只记录文本中实际发生的事实，不脑补、不评价好坏、不写写作建议。
+_SYSTEM = f"""你是一名严谨的中文网络小说结构分析编辑。
+你的任务是把指定章节拆解为结构化数据，只记录文本中实际发生的事实，
+不脑补、不评价好坏、不写写作建议。
 
 硬性要求：
-1. 只输出一个 JSON 对象，不要输出 JSON 以外的任何文字、不要使用 markdown 代码块。
+1. 只输出一个 JSON 对象，不要输出 JSON 以外的任何文字，
+   也不要使用 markdown 代码块。
 2. 所有枚举字段只能取以下受控值：
    - tone（基调）只能是：{_TONES}
    - theme_tags（主题标签）只能是：{_THEMES}
