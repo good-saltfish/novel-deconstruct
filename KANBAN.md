@@ -8,7 +8,6 @@
 
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
-| #2 | OpenAI 兼容 provider | 作为有 API key 的使用者，我想用自己的 key 跑出真实语义摘要 | 环境变量配置 key/base_url；respx 或录制响应测试；失败可重试（tenacity）；schema 非法值不入库；无 key 时给出明确报错 | type/feature priority/high |
 | #7 | 启用 GitHub 远程仓库 | 作为维护者，我要把本地仓库推到 GitHub 并启用 CI 与分支保护 | `gh repo create` + 推送；main 分支保护必需 CI；Issues 按本看板编号创建；CI 徽章上 README | type/chore priority/high |
 | #3 | Stage 3 跨章聚合 | 作为使用者，我想得到故事线/节奏/情绪模块的跨章分析 | 只依赖 JSONL 真源重跑；聚合结论带章节证据；产物 Markdown+JSONL；至少 1 个 CC0 多章 fixture | type/feature priority/medium |
 | #8 | PyPI 发布准备 | 作为使用者，我想 `pip install novel-deconstruct` 而不是克隆源码 | 核名 ndecon/novel-deconstruct；tag 触发 release workflow；sdist+wheel 校验；版本与 CHANGELOG 一致 | type/chore priority/medium |
@@ -36,4 +35,5 @@
 | # | 标题 | 完成证据 | 日期 |
 |---:|---|---|---|
 | #1 | v0.1 竖切：split/analyze/Fake/双产物 | 21 测试全绿；戏神 40 章 dogfood 40/40 一致；v0.1.0 tag 待打 | 2026-09-22 |
-| #5 | 仓库工程流程（Issue/PR 模板、CI、ADR、Kanban、社区文件） | 本提交；首次 commit 即含全套流程 | 2026-09-22 |
+| #5 | 仓库工程流程（Issue/PR 模板、CI、ADR、Kanban、社区文件） | 首次提交即含全套流程 | 2026-09-22 |
+| #2 | OpenAI 兼容 provider + 证据锚定 | 36 测试全绿（含 8 个 MockTransport 契约场景）；429 重试/401 速败/非法枚举拒绝/无证据情节点丢弃均有测试 | 2026-09-23 |

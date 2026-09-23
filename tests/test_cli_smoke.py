@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from ndecon.cli import app
@@ -39,3 +40,17 @@ def test_unknown_provider_rejected(tmp_path: Path) -> None:
         app, ["analyze", str(FIXTURE), "--out", str(tmp_path / "x"), "--provider", "gpt-xyz"]
     )
     assert result.exit_code != 0
+
+
+def test_openai_compat_without_key_fails_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """openai-compat 缺少 key 时给出可读错误而非 traceback。"""
+    monkeypatch.delenv("NOVEL_DECON_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = CliRunner().invoke(
+        app,
+        ["analyze", str(FIXTURE), "--out", str(tmp_path / "x"), "--provider", "openai-compat"],
+    )
+    assert result.exit_code != 0
+    assert "API key" in result.output or "key" in result.output.lower()

@@ -8,6 +8,10 @@
 ### Added
 
 - 仓库工程流程：Issue/PR 模板、GitHub Actions CI、pre-commit、ADR、Kanban 看板、CONTRIBUTING。
+- **OpenAI 兼容 Provider（#2）**：`--provider openai-compat`，支持 `NOVEL_DECON_API_KEY`/`OPENAI_API_KEY`、自定义 `OPENAI_BASE_URL` 与 `--model`；JSON 结构化输出、429/5xx 指数退避重试、错误四分类（配置/HTTP/响应/Schema）。
+- **证据锚定器**：模型只给 quote 文本，字符偏移由本地三级匹配（精确→NFKC 空白滑窗→去标点滑窗）唯一定位；无法定位的情节点丢弃计数，绝不伪造证据。
+- Provider 诊断披露：HTTP 重试次数、丢弃情节点、截断章节、未锚定可选 quote。
+- 版本化 prompt（`oc-v0`），受控词表与枚举同源。
 
 ## [0.1.0] - 2026-09-22
 
