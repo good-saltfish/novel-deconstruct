@@ -9,9 +9,8 @@
 
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
-| #8 | PyPI 发布准备 | 作为使用者，我想 `pip install novel-deconstruct` 而不是克隆源码 | 核名 ndecon/novel-deconstruct；tag 触发 release workflow；sdist+wheel 校验；版本与 CHANGELOG 一致 | type/chore priority/medium |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文 | type/feature priority/low |
-| #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | pip 源恢复；pre-commit install；存量代码 ruff 清零 | type/chore priority/low |
+| #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | ruff 已本地安装且存量零告警；pre-commit install 待执行 | type/chore priority/low |
 
 ## Icebox（不承诺排期，触发条件满足才进 Backlog）
 
@@ -38,3 +37,4 @@
 | #2 | OpenAI 兼容 provider + 证据锚定 | 36 测试全绿（含 8 个 MockTransport 契约场景）；429 重试/401 速败/非法枚举拒绝/无证据情节点丢弃均有测试 | 2026-09-23 |
 | #3 | Stage 3 确定性跨章聚合 | 41 测试全绿；戏神 40 章 1600 情节点 dogfood 产出节奏.md/aggregation.jsonl；统计可从 JSONL 完全重算 | 2026-09-23 |
 | #7 | GitHub 远程仓库启用 | 仓库公开、SSH over 443 推送、五个 CI 检查全绿（3.10/3.11/3.12+ruff+hygiene）、main 分支保护、#1–#13 Issue 编号锁定 | 2026-09-23 |
+| #8 | PyPI 发布准备 | PyPI 核名可用；sdist+wheel 构建与 twine 校验通过；全新 venv 装 wheel 后 CLI 冒烟通过；CI package job + Release workflow（OIDC，手动可仅构建演练）；docs/releasing.md。首次实际发布见 #14 | 2026-09-23 |

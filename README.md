@@ -78,6 +78,7 @@ ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --mod
 - 开发环境、分支纪律、Conventional Commits、DoD：[CONTRIBUTING.md](CONTRIBUTING.md)
 - 架构决策记录：[docs/adr/](docs/adr/README.md)
 - 版本变更：[CHANGELOG.md](CHANGELOG.md)
+- 发布手册（PyPI Trusted Publishing）：[docs/releasing.md](docs/releasing.md)
 - 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；安全问题：[SECURITY.md](SECURITY.md)
 
 ## 致谢与方法论来源

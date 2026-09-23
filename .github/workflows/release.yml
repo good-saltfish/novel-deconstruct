@@ -1,0 +1,80 @@
+name: Release
+
+# 触发方式：
+# 1) 推送 v* 标签 -> 构建并发布到 PyPI（要求已在 PyPI 项目配置 GitHub OIDC trusted publisher）
+# 2) 手动 workflow_dispatch -> 默认只构建不发布，用于发布前演练
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "勾选才发布到 PyPI；默认仅构建验证（dist 制品仍可下载检查）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+      - name: Inspect packaged contents
+        run: |
+          # wheel 必须含入口模块；sdist/wheel 必须带许可证
+          python - <<'PY'
+          import zipfile, glob, sys, tarfile
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as z:
+              names = z.namelist()
+          assert any(n.endswith("ndecon/cli.py") for n in names), "wheel 缺少 ndecon/cli.py"
+          assert any(n.endswith("LICENSE") for n in names), "wheel 缺少 LICENSE"
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          with tarfile.open(sdist) as t:
+              members = t.getnames()
+          assert any(m.endswith("LICENSE") for m in members), "sdist 缺少 LICENSE"
+          assert any(m.endswith("pyproject.toml") for m in members), "sdist 缺少 pyproject.toml"
+          print("package content OK:", wheel, sdist)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    name: publish to PyPI + GitHub Release
+    needs: build
+    # tag 推送必发布；手动运行只有勾选 publish 才发布
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI trusted publishing（OIDC），不存储任何 API token
+      contents: write   # 创建 GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
