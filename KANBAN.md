@@ -11,6 +11,7 @@
 |---:|---|---|---|---|
 | #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
 | #16 | 章节正文生成与章节自评（面板第二轮） | 作为作者，我想在确认的细纲上生成章节正文并得到自评 | 依赖 #15 骨架；正文为候选可编辑；引用细纲/人设一致性校验；openai-compat 面板接入 | type/feature priority/high |
+| #17 | L1 一致性 RAG：bigram BM25 + Recall@10 金标基线 | 作为作者，我希望生成章节时自动带回本书前文的摘要/角色/伏笔，保证前后一致 | 见 ADR-0004：纯 Python 中文 bigram BM25 离线可跑；只索引本书不索引参考书原文；确定性上下文包（前章摘要/角色卡/活跃伏笔/叙事债）；CC0 金标集 + Recall@10 JSON 报告；#16 消费该上下文包 | type/feature priority/high |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文 | type/feature priority/low |
 | #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | ruff 0.16.8 已装、存量零告警；pre-commit install 待执行（HTTPS git 需走 SSH 改写） | type/chore priority/low |
 
@@ -20,7 +21,7 @@
 - #10 短篇拆书管道（长篇流程连续自用 4 周后另开，绝不与长篇混库）
 - #11 持续学习层深化（#15 已实现最薄的"聚合数字注入"；跨书卡片库/检索/差距对照仍留 backlog）
 - #12 GUI/TUI（#15 已交付基础本地 Web 面板；仅当面板被证明不足再升级形态）
-- #13 向量检索（先证明 BM2V0 的 Recall 不足，才允许引入）
+- #13 向量混合检索（L2；按 [ADR-0004](docs/adr/0004-rag-tiers-and-adoption-gates.md) 引入门：先证明 #17 L1 BM25 的 Recall@10 不足，才允许解冻）
 
 ## Doing（WIP = 1）
 

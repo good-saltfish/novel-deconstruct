@@ -15,3 +15,4 @@
 | [0001](0001-record-architecture-decisions.md) | 记录架构决策 | Accepted |
 | [0002](0002-deterministic-splitting-and-fake-first.md) | 确定性切分与 Fake-first 双轨 | Accepted |
 | [0003](0003-kanban-flow-and-hybrid-pr-policy.md) | 持续流 Kanban 与混合 PR 纪律 | Accepted |
+| [0004](0004-rag-tiers-and-adoption-gates.md) | RAG 分层与引入门（L0–L3，凭 Recall 金标解冻） | Accepted |
