@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest -q
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff check
+        run: ruff check src tests
+
+  hygiene:
+    name: repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 拒绝版权正文与大文件入库
+        run: |
+          # 单个文件不得超过 1MB（CC0 fixture 应远小于此）
+          big=$(find . -path ./.git -prune -o -type f -size +1M -print)
+          if [ -n "$big" ]; then
+            echo "发现超过 1MB 的文件，疑似版权原文入库："
+            echo "$big"
+            exit 1
+          fi
+          # tests/fixtures 下只允许 .txt/.md/.json
+          bad=$(find tests/fixtures -type f ! -name '*.txt' ! -name '*.md' ! -name '*.json' || true)
+          if [ -n "$bad" ]; then
+            echo "fixtures 中出现非允许类型文件：$bad"
+            exit 1
+          fi
