@@ -36,6 +36,11 @@ ndecon split 我的小说.txt --out .out/mybook
 
 # 2) 完整拆解（v0.1 用内置 Fake，离线可跑）
 ndecon analyze 我的小说.txt --out .out/mybook --provider fake
+
+# 3) 真实语义拆解（OpenAI 兼容接口，使用你自己的 key）
+#    base_url 默认 https://api.openai.com/v1，可指向任何兼容端点
+setx NOVEL_DECON_API_KEY "sk-..."          # 或 OPENAI_API_KEY
+ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --model gpt-4o-mini
 ```
 
 产物：
