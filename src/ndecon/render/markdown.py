@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from ndecon.domain.models import (
+    Aggregation,
     ChapterEntry,
     ChapterSummary,
     GoldenChapterReport,
@@ -19,6 +20,7 @@ from ndecon.domain.models import (
 )
 
 _CHAPTER_DIR = "章节"
+_PLOT_DIR = "剧情"
 _DATA_DIR = "data"
 
 
@@ -141,6 +143,54 @@ def write_outline(
     _write_jsonl(out_dir / _DATA_DIR / "entries.jsonl", [entry.model_dump() for entry in entries])
 
 
+def _render_aggregation_md(agg: Aggregation) -> str:
+    """渲染 Stage 3 节奏与跨章统计 Markdown（只呈现事实统计，不写叙事评论）。"""
+    lines = [
+        f"# 节奏与跨章统计：{agg.book_title}",
+        "",
+        "> 本页全部为章节摘要的确定性统计（Stage 3），可由 data/aggregation.jsonl 重算；"
+        "“为什么这样安排”属于学习层，请自行填写。",
+        "",
+        f"情节点总数：{agg.total_plot_points} | 输入 prompt 版本：{'、'.join(agg.source_prompt_versions)}",
+        "",
+        "## 章节节奏",
+        "",
+        "| 章 | 主导基调 | 爽点情节点序号 | 基调分布 |",
+        "|---:|---|---|---|",
+    ]
+    for rhythm in agg.chapter_rhythms:
+        tone_text = "、".join(f"{tone}×{count}" for tone, count in sorted(rhythm.tone_counts.items()))
+        hits = "、".join(str(i) for i in rhythm.satisfying_point_indexes) or "—"
+        lines.append(
+            f"| {rhythm.order} | {rhythm.dominant_tone.value} | {hits} | {tone_text} |"
+        )
+
+    pacing = agg.pacing
+    lines += [
+        "",
+        "## 爽点章距",
+        "",
+        f"- 含爽点章节：{pacing.satisfying_chapters or '（无）'}",
+        f"- 相邻章距：{pacing.gaps or '（不足两处）'}",
+        f"- 平均章距：{pacing.average_gap if pacing.average_gap is not None else '—'}",
+        f"- 最大章距（节奏空窗）：{pacing.longest_gap if pacing.longest_gap is not None else '—'}",
+        "",
+        "## 主题分布",
+        "",
+        "| 主题标签 | 次数 |",
+        "|---|---:|",
+    ]
+    for tag, count in sorted(agg.theme_distribution.items(), key=lambda kv: (-kv[1], kv[0])):
+        lines.append(f"| {tag} | {count} |")
+
+    lines += ["", "## 角色出场矩阵", "", "| 角色 | 情节点提及 | 出场章号 |", "|---|---:|---|"]
+    for character in agg.characters:
+        chapters = "、".join(str(n) for n in character.chapter_orders)
+        lines.append(f"| {character.name} | {character.mention_count} | {chapters} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def write_bundle(out_dir: Path, bundle: ReportBundle) -> None:
     """analyze 模式落盘：概要、逐章摘要、黄金三章报告与 JSONL 真源。"""
     _write_text(
@@ -156,6 +206,15 @@ def write_bundle(out_dir: Path, bundle: ReportBundle) -> None:
     _write_jsonl(out_dir / _DATA_DIR / "entries.jsonl", [e.model_dump() for e in bundle.entries])
     _write_jsonl(out_dir / _DATA_DIR / "chapters.jsonl", [s.model_dump() for s in bundle.summaries])
     _write_jsonl(out_dir / _DATA_DIR / "reports.jsonl", [g.model_dump() for g in bundle.golden_reports])
+    if bundle.aggregation is not None:
+        _write_text(
+            out_dir / _PLOT_DIR / "节奏.md",
+            _render_aggregation_md(bundle.aggregation),
+        )
+        _write_jsonl(
+            out_dir / _DATA_DIR / "aggregation.jsonl",
+            [bundle.aggregation.model_dump()],
+        )
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

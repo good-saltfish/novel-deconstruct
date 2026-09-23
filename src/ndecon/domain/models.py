@@ -105,6 +105,47 @@ class GoldenChapterReport(_Provenance):
     takeaways: list[str] = Field(default_factory=list, description="可借鉴要素；Fake 必须留空")
 
 
+class ChapterRhythm(BaseModel):
+    """单章节奏画像（Stage 3 确定性聚合，不调用模型）。"""
+
+    order: int = Field(ge=1)
+    dominant_tone: Tone = Field(description="本章情节点基调众数；并列时取最先达到峰值者")
+    tone_counts: dict[str, int] = Field(description="基调 -> 情节点数量")
+    theme_counts: dict[str, int] = Field(default_factory=dict, description="主题标签 -> 出现次数")
+    satisfying_point_indexes: list[int] = Field(
+        default_factory=list, description="基调为'爽'的情节点序号（章内）"
+    )
+
+
+class CharacterAppearance(BaseModel):
+    """角色跨章出场统计（名字归一化由上游负责，聚合器不做同名合并）。"""
+
+    name: str = Field(min_length=1)
+    chapter_orders: list[int] = Field(description="出场章号，升序去重")
+    mention_count: int = Field(ge=0, description="情节点级提及次数")
+
+
+class PacingStats(BaseModel):
+    """全书节奏统计：爽点在章级的分布与相邻间距。"""
+
+    satisfying_chapters: list[int] = Field(default_factory=list, description="含'爽'情节点的章号")
+    gaps: list[int] = Field(default_factory=list, description="相邻爽点章的章距；不足两处为空")
+    average_gap: float | None = Field(default=None, description="平均章距；不足两处为 null")
+    longest_gap: int | None = Field(default=None, description="最大章距（用于定位节奏空窗）")
+
+
+class Aggregation(BaseModel):
+    """Stage 3 跨章聚合产物：全部由章节摘要确定性推导，可随时从 JSONL 重算。"""
+
+    book_title: str = Field(min_length=1)
+    source_prompt_versions: list[str] = Field(description="输入摘要的 prompt 版本集合，用于缓存失效")
+    total_plot_points: int = Field(ge=0)
+    chapter_rhythms: list[ChapterRhythm] = Field(min_length=1)
+    theme_distribution: dict[str, int] = Field(default_factory=dict)
+    characters: list[CharacterAppearance] = Field(default_factory=list)
+    pacing: PacingStats
+
+
 class ReportBundle(BaseModel):
     """一次完整拆解的总产物包（序列化为 JSONL 真源 + Markdown 渲染源）。"""
 
@@ -113,4 +154,5 @@ class ReportBundle(BaseModel):
     entries: list[ChapterEntry] = Field(min_length=1)
     summaries: list[ChapterSummary] = Field(default_factory=list)
     golden_reports: list[GoldenChapterReport] = Field(default_factory=list)
+    aggregation: Aggregation | None = None
     warnings: list[str] = Field(default_factory=list)

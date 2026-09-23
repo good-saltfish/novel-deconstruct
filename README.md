@@ -49,11 +49,14 @@ ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --mod
 .out/mybook/
 ├── 概要.md                # 章节索引与全书概要
 ├── 章节/
-│   ├── 第1章_摘要.md       # 逐章结构化摘要
-│   └── 第1章_深度拆解.md   # 黄金三章报告（仅前 3 章）
+│   ├── 第0001章_摘要.md       # 逐章结构化摘要
+│   └── 第0001章_深度拆解.md   # 黄金三章报告（仅前 3 章）
+├── 剧情/
+│   └── 节奏.md            # Stage 3：基调曲线/爽点章距/主题分布/角色矩阵
 └── data/
     ├── chapters.jsonl     # 机读真源：每章一行
-    └── reports.jsonl      # 黄金三章结构化报告
+    ├── reports.jsonl      # 黄金三章结构化报告
+    └── aggregation.jsonl  # 跨章确定性统计（可从 chapters.jsonl 重算）
 ```
 
 ## 设计纪律

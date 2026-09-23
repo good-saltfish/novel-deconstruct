@@ -5,6 +5,7 @@ from __future__ import annotations
 from ndecon.domain.models import ReportBundle
 from ndecon.ingest.splitter import SplitResult, split_chapters
 from ndecon.pipeline.stage0 import build_entries
+from ndecon.pipeline.stage3 import aggregate
 from ndecon.providers.base import DeconstructProvider
 
 # 黄金三章固定为前 3 章（顺序章号前提下；若切分告警章号非连续，只取前三章边界）
@@ -47,6 +48,7 @@ def run_analyze(text: str, book_title: str, provider: DeconstructProvider) -> Re
 
     first_chapter_text = text[split.boundaries[0].start : split.boundaries[0].end]
     thin_summary = provider.thin_summary(first_chapter_text, book_title)
+    aggregation = aggregate(book_title, summaries)
 
     return ReportBundle(
         book_title=book_title,
@@ -54,5 +56,6 @@ def run_analyze(text: str, book_title: str, provider: DeconstructProvider) -> Re
         entries=entries,
         summaries=summaries,
         golden_reports=golden,
+        aggregation=aggregation,
         warnings=list(split.warnings),
     )

@@ -29,6 +29,9 @@ def test_analyze_command(tmp_path: Path) -> None:
     assert (out / "概要.md").is_file()
     assert (out / "data" / "chapters.jsonl").is_file()
     assert (out / "data" / "reports.jsonl").is_file()
+    # Stage 3 聚合产物：节奏页与机读 JSONL
+    assert (out / "剧情" / "节奏.md").is_file()
+    assert (out / "data" / "aggregation.jsonl").is_file()
     # 黄金三章：第 1-3 章深度拆解
     for order in range(1, 4):
         assert (out / "章节" / f"第{order:04d}章_深度拆解.md").is_file()
