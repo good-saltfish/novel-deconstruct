@@ -82,3 +82,17 @@ def test_get_missing_raises_keyerror_and_delete_idempotent(tmp_path) -> None:
     with pytest.raises(KeyError):
         store.get("nope")
     store.delete("nope")  # 不抛异常
+
+
+def test_project_artifact_filename_whitelist(tmp_path) -> None:
+    """项目内 JSON 产物只接受安全文件名，拒绝目录穿越与可执行后缀。"""
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-art-1", "creation", "产物测试"),
+    )
+    store.save_creation(project)
+    path = store.write_project_artifact("creation-art-1", "index.json", {"ok": True})
+    assert path.name == "index.json"
+    for bad_name in ("../evil.json", "a/b.json", "index.JS", "run.exe", ""):
+        with pytest.raises(ValueError):
+            store.write_project_artifact("creation-art-1", bad_name, {})

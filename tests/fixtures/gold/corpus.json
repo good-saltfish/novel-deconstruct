@@ -1,0 +1,655 @@
+{
+  "book_title": "灯火守门人（金标语料）",
+  "license": "CC0-1.0",
+  "note": "本文件为评测专用、由项目维护者自造的虚构文本摘要，不含任何真实出版物内容，可自由复用。",
+  "summaries": [
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch1",
+      "order": 1,
+      "title": "第一章 停电夜的路灯",
+      "gist": "旧城大面积停电的夜里，高中生林盏发现巷口路灯会随着自己的心跳明灭，慌乱中遇见修灯老人周伯。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "暴雨夜旧城区跳闸停电，林盏抄近路回家，发现唯独一盏路灯不灭。",
+          "tone": "紧张",
+          "theme_tags": ["悬念"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch1",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch1"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "路灯随着林盏的心跳一节一节亮起，他以为触电，吓得摔倒在积水里。",
+          "tone": "恐怖",
+          "theme_tags": ["悬念"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch1",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch1"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "修灯老人周伯提着铜灯罩出现，制止林盏去碰那盏灯，并第一次提到守灯人。",
+          "tone": "温馨",
+          "theme_tags": ["日常", "悬念"],
+          "characters": ["林盏", "周伯"],
+          "source": {
+            "chapter_id": "ch1",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch1"
+          }
+        }
+      ],
+      "characters": ["林盏", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch2",
+      "order": 2,
+      "title": "第二章 新任守灯人",
+      "gist": "周伯向林盏解释每盏路灯下都封着名叫夜色的东西；管理处陈主任上门登记巡夜表，误把林盏写成新任守灯人。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "周伯说路灯不是照明工具，而是封住夜色的封印，灯灭一次就有东西钻出来。",
+          "tone": "压抑",
+          "theme_tags": ["悬念"],
+          "characters": ["周伯", "林盏"],
+          "source": {
+            "chapter_id": "ch2",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch2"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "管理处陈主任带着巡夜表上门，催周伯交出接班人签字。",
+          "tone": "紧张",
+          "theme_tags": ["权力"],
+          "characters": ["陈主任", "周伯"],
+          "source": {
+            "chapter_id": "ch2",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch2"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "陈主任没听完解释，在登记册上把林盏登记成新任守灯人，盖章离开。",
+          "tone": "压抑",
+          "theme_tags": ["权力", "悬念"],
+          "characters": ["陈主任", "林盏"],
+          "source": {
+            "chapter_id": "ch2",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch2"
+          }
+        }
+      ],
+      "characters": ["周伯", "林盏", "陈主任"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch3",
+      "order": 3,
+      "title": "第三章 井里的东西",
+      "gist": "林盏被迫第一次独自巡夜，在废巷水井边遭遇爬出来的影兽，靠手里的灯罩把影兽封回井底。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "林盏按巡夜表走到废巷，发现干涸多年的水井里传来抓挠石壁的声音。",
+          "tone": "恐怖",
+          "theme_tags": ["悬念"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch3",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch3"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "一只影兽顺着井壁爬出水井，黑水一样的身体贴着地面扑向林盏。",
+          "tone": "紧张",
+          "theme_tags": ["热血"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch3",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch3"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "林盏记起周伯的话，把铜灯罩对准井口点亮，影兽被光绳拖回井底封印。",
+          "tone": "热血",
+          "theme_tags": ["成长"],
+          "characters": ["林盏", "周伯"],
+          "source": {
+            "chapter_id": "ch3",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch3"
+          }
+        }
+      ],
+      "characters": ["林盏", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch4",
+      "order": 4,
+      "title": "第四章 跟踪者",
+      "gist": "同窗苏晓察觉林盏夜夜带伤而归，放学一路跟踪他进入旧城区，亲眼看见路灯按他的心意排列亮起。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "苏晓发现林盏白天总在课上睡着，手背还有被灼伤的红痕。",
+          "tone": "轻松",
+          "theme_tags": ["日常", "友情"],
+          "characters": ["苏晓", "林盏"],
+          "source": {
+            "chapter_id": "ch4",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch4"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "放学后苏晓一路跟踪林盏进入封锁的旧城区，差点在巷子里跟丢。",
+          "tone": "紧张",
+          "theme_tags": ["友情", "悬念"],
+          "characters": ["苏晓", "林盏"],
+          "source": {
+            "chapter_id": "ch4",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch4"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "苏晓躲在墙角，亲眼看见路灯一盏接一盏在林盏身后亮起，像活过来的队伍。",
+          "tone": "恐怖",
+          "theme_tags": ["悬念"],
+          "characters": ["苏晓", "林盏"],
+          "source": {
+            "chapter_id": "ch4",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch4"
+          }
+        }
+      ],
+      "characters": ["苏晓", "林盏"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch5",
+      "order": 5,
+      "title": "第五章 长街灯阵",
+      "gist": "成群影兽夜袭旧城配电站，林盏点亮整条长街的路灯布下灯阵守住电闸，苏晓用手机拍下了全过程。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "夜里配电站警报大作，成群影兽从下水道各处涌出扑向变压器。",
+          "tone": "紧张",
+          "theme_tags": ["热血", "悬念"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch5",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch5"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "林盏沿长街狂奔，把三排路灯逐一点亮连成灯阵，把影兽群拦在电闸外。",
+          "tone": "热血",
+          "theme_tags": ["成长", "热血"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch5",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch5"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "赶来的苏晓没有逃走，举起手机拍下整条灯街和影兽败退的画面。",
+          "tone": "热血",
+          "theme_tags": ["友情"],
+          "characters": ["苏晓", "林盏"],
+          "source": {
+            "chapter_id": "ch5",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch5"
+          }
+        }
+      ],
+      "characters": ["林盏", "苏晓"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch6",
+      "order": 6,
+      "title": "第六章 十年前的火",
+      "gist": "陈主任勒令林盏停止巡夜，并在争执中说出周伯十年前的封灯事故：那场火烧掉了半条旧街。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "陈主任看到灯阵留下的焦痕，当面勒令林盏交出巡夜表，不准再巡夜。",
+          "tone": "压抑",
+          "theme_tags": ["权力"],
+          "characters": ["陈主任", "林盏"],
+          "source": {
+            "chapter_id": "ch6",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch6"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "陈主任提到周伯十年前主持过一次封灯，结果灯阵失控起火。",
+          "tone": "悲伤",
+          "theme_tags": ["悬念", "亲情"],
+          "characters": ["陈主任", "周伯"],
+          "source": {
+            "chapter_id": "ch6",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch6"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "那场封灯事故引发的大火烧掉半条旧街，此后管理处再也不许私人点灯。",
+          "tone": "压抑",
+          "theme_tags": ["权力"],
+          "characters": ["陈主任", "周伯"],
+          "source": {
+            "chapter_id": "ch6",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch6"
+          }
+        }
+      ],
+      "characters": ["陈主任", "林盏", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch7",
+      "order": 7,
+      "title": "第七章 旧屋里的手册",
+      "gist": "林盏在周伯留下的旧屋里翻找，从床底木箱找出巡夜手册，手册夹层中藏着半截已经熄灭的铜灯。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "周伯失踪后，林盏进入他久无人住的旧屋，屋里的灯泡全被拧下。",
+          "tone": "压抑",
+          "theme_tags": ["悬念"],
+          "characters": ["林盏", "周伯"],
+          "source": {
+            "chapter_id": "ch7",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch7"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "林盏从床底拖出木箱，在工具堆里找到周伯的巡夜手册。",
+          "tone": "紧张",
+          "theme_tags": ["成长"],
+          "characters": ["林盏", "周伯"],
+          "source": {
+            "chapter_id": "ch7",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch7"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "巡夜手册的夹层里藏着半截铜灯，灯罩从中间断开，灯芯早已熄灭。",
+          "tone": "紧张",
+          "theme_tags": ["悬念"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch7",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch7"
+          }
+        }
+      ],
+      "characters": ["林盏", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch8",
+      "order": 8,
+      "title": "第八章 铜灯复燃",
+      "gist": "长街灯阵的余焰让半截铜灯重新点燃，林盏借灯光看见十年前周伯封灯之夜的真相，带着证据与陈主任当面对质。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "林盏带着半截铜灯走过长街，灯阵残余的光粒飘进灯罩，熄灭的铜灯重新点燃。",
+          "tone": "热血",
+          "theme_tags": ["成长", "热血"],
+          "characters": ["林盏"],
+          "source": {
+            "chapter_id": "ch8",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch8"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "铜灯火光里浮现十年前封灯之夜的影像：当年是陈主任强推合闸才引发大火。",
+          "tone": "悲伤",
+          "theme_tags": ["复仇", "悬念"],
+          "characters": ["林盏", "陈主任", "周伯"],
+          "source": {
+            "chapter_id": "ch8",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch8"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "林盏在管理处门口拦下陈主任，举起复燃的铜灯当面对质十年前的封灯事故真相。",
+          "tone": "紧张",
+          "theme_tags": ["权力", "复仇"],
+          "characters": ["林盏", "陈主任"],
+          "source": {
+            "chapter_id": "ch8",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch8"
+          }
+        }
+      ],
+      "characters": ["林盏", "陈主任", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch9",
+      "order": 9,
+      "title": "第九章 没有人相信的视频",
+      "gist": "苏晓把长街灯阵的视频发到校园论坛，同学们只当成特效玩笑；两人没有放弃，决定先查清周伯的下落。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "苏晓把手机拍下的灯阵视频发到校园论坛，标题写着旧城真的有怪物。",
+          "tone": "轻松",
+          "theme_tags": ["日常", "友情"],
+          "characters": ["苏晓"],
+          "source": {
+            "chapter_id": "ch9",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch9"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "评论区都说是五毛特效和摆拍，没有一个同学相信视频是真的。",
+          "tone": "压抑",
+          "theme_tags": ["日常"],
+          "characters": ["苏晓", "林盏"],
+          "source": {
+            "chapter_id": "ch9",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch9"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "林盏没有辩解，只把周伯失踪前的巡夜路线摊在桌上，两人决定先找人。",
+          "tone": "温馨",
+          "theme_tags": ["友情", "成长"],
+          "characters": ["林盏", "苏晓"],
+          "source": {
+            "chapter_id": "ch9",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch9"
+          }
+        }
+      ],
+      "characters": ["林盏", "苏晓"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch10",
+      "order": 10,
+      "title": "第十章 拔灯",
+      "gist": "管理处下令封存旧城区路灯，施工队拔起灯柱时，灯座下沉睡的影兽成群逃出，封禁令反而打开了封印。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "管理处贴出封禁令，施工队开着吊车进旧城区，要把路灯一根根拔掉。",
+          "tone": "压抑",
+          "theme_tags": ["权力"],
+          "characters": ["陈主任"],
+          "source": {
+            "chapter_id": "ch10",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch10"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "第一根灯柱被连根拔起时，灯座下的黑水涌出来，成群影兽顺着裂缝逃出。",
+          "tone": "恐怖",
+          "theme_tags": ["悬念"],
+          "characters": [],
+          "source": {
+            "chapter_id": "ch10",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch10"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "林盏赶到现场，发现拔灯等于亲手拆除封印，整条街的灯座都在震动。",
+          "tone": "紧张",
+          "theme_tags": ["热血", "悬念"],
+          "characters": ["林盏", "陈主任"],
+          "source": {
+            "chapter_id": "ch10",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch10"
+          }
+        }
+      ],
+      "characters": ["林盏", "陈主任"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch11",
+      "order": 11,
+      "title": "第十一章 地下管廊",
+      "gist": "林盏和苏晓沿巡夜路线进入地下管廊，在积水深处找到被困多日的周伯；周伯说出铜灯全亮的条件。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "两人照着巡夜手册上的路线图掀开井盖，进入布满管线的地下管廊。",
+          "tone": "紧张",
+          "theme_tags": ["友情", "悬念"],
+          "characters": ["林盏", "苏晓"],
+          "source": {
+            "chapter_id": "ch11",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch11"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "管廊尽头的积水小屋里，他们找到被困多日、靠灯芯微光撑着的周伯。",
+          "tone": "温馨",
+          "theme_tags": ["亲情", "友情"],
+          "characters": ["林盏", "苏晓", "周伯"],
+          "source": {
+            "chapter_id": "ch11",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch11"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "周伯摸着半截铜灯说，灯要两个人心跳同频才能完全点亮，一个人拿不动这份责任。",
+          "tone": "温馨",
+          "theme_tags": ["成长", "友情"],
+          "characters": ["周伯", "林盏", "苏晓"],
+          "source": {
+            "chapter_id": "ch11",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch11"
+          }
+        }
+      ],
+      "characters": ["林盏", "苏晓", "周伯"]
+    },
+    {
+      "model_id": "rule:cc0-fixture",
+      "prompt_version": "gold-v0",
+      "schema_version": "v0",
+      "chapter_id": "ch12",
+      "order": 12,
+      "title": "第十二章 万灯齐明",
+      "gist": "林盏与苏晓合力让铜灯全亮，长街万灯齐明，出逃的影兽被尽数逼回井底；陈主任被调离，新的守灯契约成立。",
+      "plot_points": [
+        {
+          "index": 1,
+          "summary": "林盏和苏晓各执半截铜灯，心跳在奔跑中慢慢合上同一节拍，铜灯亮到刺眼。",
+          "tone": "热血",
+          "theme_tags": ["友情", "热血"],
+          "characters": ["林盏", "苏晓"],
+          "source": {
+            "chapter_id": "ch12",
+            "start": 0,
+            "end": 1,
+            "quote": "锚点占位句一",
+            "content_hash": "cc0-fixture-ch12"
+          }
+        },
+        {
+          "index": 2,
+          "summary": "铜灯光浪推过整条长街，上万盏路灯同时亮起，影兽被逼得成群退回井底。",
+          "tone": "热血",
+          "theme_tags": ["成长"],
+          "characters": ["林盏", "苏晓", "周伯"],
+          "source": {
+            "chapter_id": "ch12",
+            "start": 1,
+            "end": 2,
+            "quote": "锚点占位句二",
+            "content_hash": "cc0-fixture-ch12"
+          }
+        },
+        {
+          "index": 3,
+          "summary": "天亮后陈主任被上级调离管理处，周伯重新拟了一份守灯契约，这一次有两个签名。",
+          "tone": "温馨",
+          "theme_tags": ["权力", "日常"],
+          "characters": ["陈主任", "周伯", "林盏", "苏晓"],
+          "source": {
+            "chapter_id": "ch12",
+            "start": 2,
+            "end": 3,
+            "quote": "锚点占位句三",
+            "content_hash": "cc0-fixture-ch12"
+          }
+        }
+      ],
+      "characters": ["林盏", "苏晓", "周伯", "陈主任"]
+    }
+  ]
+}

@@ -21,6 +21,8 @@ from ndecon.workspace.models import (
 )
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-一-鿿]{1,64}$")
+# 项目内 JSON 产物文件名白名单（如检索索引 index.json），杜绝目录穿越写法
+_SAFE_ARTIFACT = re.compile(r"^[a-z0-9][a-z0-9_-]*\.json$")
 
 
 def new_project_id(kind: str, title: str) -> str:
@@ -103,6 +105,14 @@ class WorkspaceStore:
         if data["meta"]["kind"] == "reference":
             return ReferenceProject(**data)
         return CreationProject(**data)
+
+    def write_project_artifact(self, project_id: str, filename: str, payload: dict) -> Path:
+        """在项目目录内原子写入一个 JSON 产物（如检索索引）；文件名走白名单防穿越。"""
+        if not _SAFE_ARTIFACT.match(filename):
+            raise ValueError(f"非法产物文件名：{filename!r}")
+        path = self._project_dir(project_id) / filename
+        self._atomic_write_json(path, payload)
+        return path
 
     def delete(self, project_id: str) -> None:
         """删除整个项目目录；不存在时静默（删除操作天然幂等）。"""
