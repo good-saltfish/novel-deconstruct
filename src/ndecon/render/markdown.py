@@ -80,12 +80,14 @@ def _render_summary_md(summary: ChapterSummary) -> str:
             "",
             point.summary,
             "",
-            f"> 证据：{point.source.quote}（{point.source.chapter_id} 偏移 {point.source.start}-{point.source.end}）",
+            f"> 证据：{point.source.quote}（{point.source.chapter_id} 偏移 "
+            f"{point.source.start}-{point.source.end}）",
             "",
         ]
     lines += [
         "---",
-        f"provider: {summary.model_id} | prompt: {summary.prompt_version} | schema: {summary.schema_version}",
+        f"provider: {summary.model_id} | prompt: {summary.prompt_version} "
+        f"| schema: {summary.schema_version}",
         "",
     ]
     return "\n".join(lines)
@@ -96,7 +98,8 @@ def _render_golden_md(report: GoldenChapterReport) -> str:
     lines = [
         f"# 第{report.order}章 {report.title} · 深度拆解",
         "",
-        f"provider: {report.model_id} | prompt: {report.prompt_version} | schema: {report.schema_version}",
+        f"provider: {report.model_id} | prompt: {report.prompt_version} "
+        f"| schema: {report.schema_version}",
         "",
         "## 开篇钩子",
         "",
@@ -159,7 +162,9 @@ def _render_aggregation_md(agg: Aggregation) -> str:
         "|---:|---|---|---|",
     ]
     for rhythm in agg.chapter_rhythms:
-        tone_text = "、".join(f"{tone}×{count}" for tone, count in sorted(rhythm.tone_counts.items()))
+        tone_text = "、".join(
+            f"{tone}×{count}" for tone, count in sorted(rhythm.tone_counts.items())
+        )
         hits = "、".join(str(i) for i in rhythm.satisfying_point_indexes) or "—"
         lines.append(
             f"| {rhythm.order} | {rhythm.dominant_tone.value} | {hits} | {tone_text} |"
@@ -205,7 +210,10 @@ def write_bundle(out_dir: Path, bundle: ReportBundle) -> None:
 
     _write_jsonl(out_dir / _DATA_DIR / "entries.jsonl", [e.model_dump() for e in bundle.entries])
     _write_jsonl(out_dir / _DATA_DIR / "chapters.jsonl", [s.model_dump() for s in bundle.summaries])
-    _write_jsonl(out_dir / _DATA_DIR / "reports.jsonl", [g.model_dump() for g in bundle.golden_reports])
+    _write_jsonl(
+        out_dir / _DATA_DIR / "reports.jsonl",
+        [g.model_dump() for g in bundle.golden_reports],
+    )
     if bundle.aggregation is not None:
         _write_text(
             out_dir / _PLOT_DIR / "节奏.md",

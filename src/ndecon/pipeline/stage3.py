@@ -89,7 +89,10 @@ def aggregate(book_title: str, summaries: list[ChapterSummary]) -> Aggregation:
 
     # 爽点章距
     satisfying_chapters = [r.order for r in rhythms if r.satisfying_point_indexes]
-    gaps = [b - a for a, b in zip(satisfying_chapters, satisfying_chapters[1:])]
+    gaps = [
+        b - a
+        for a, b in zip(satisfying_chapters, satisfying_chapters[1:], strict=False)
+    ]
     pacing = PacingStats(
         satisfying_chapters=satisfying_chapters,
         gaps=gaps,

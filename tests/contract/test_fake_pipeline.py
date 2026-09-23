@@ -29,7 +29,7 @@ def test_every_quote_locates_in_chapter_text() -> None:
     """每条情节点证据必须按偏移在对应章节原文中定位（可追溯率 100%）。"""
     bundle, text = _bundle()
     boundaries = split_chapters(text).boundaries
-    for entry, summary in zip(bundle.entries, bundle.summaries):
+    for entry, summary in zip(bundle.entries, bundle.summaries, strict=True):
         boundary = next(b for b in boundaries if b.order == summary.order)
         chapter_text = text[boundary.start : boundary.end]
         assert entry.content_hash

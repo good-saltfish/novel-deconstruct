@@ -13,3 +13,4 @@ htmlcov/
 .local/
 *.local.json
 tests/tmp/
+.git-backup*/

@@ -14,7 +14,13 @@ class ProviderConfigError(ProviderError):
 class ProviderHTTPError(ProviderError):
     """HTTP 层错误，携带状态码与是否可重试标记。"""
 
-    def __init__(self, message: str, *, status_code: int | None = None, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
         """记录状态码与可重试性，供重试策略与 CLI 文案使用。"""
         super().__init__(message)
         self.status_code = status_code

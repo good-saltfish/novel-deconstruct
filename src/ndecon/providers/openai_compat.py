@@ -72,7 +72,12 @@ class OpenAICompatProvider:
         sleeper=time.sleep,
     ) -> None:
         """从显式参数或环境变量读取配置；缺少 key 时立即报配置错误。"""
-        self.api_key = api_key or os.getenv("NOVEL_DECON_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+        self.api_key = (
+            api_key
+            or os.getenv("NOVEL_DECON_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or ""
+        )
         self.base_url = (
             base_url
             or os.getenv("NOVEL_DECON_BASE_URL")
@@ -157,7 +162,9 @@ class OpenAICompatProvider:
 
     # ---------- 证据锚定 ----------
 
-    def _anchor(self, order: int, quote: str, chapter_text: str, chapter_hash: str) -> SourceRef | None:
+    def _anchor(
+        self, order: int, quote: str, chapter_text: str, chapter_hash: str
+    ) -> SourceRef | None:
         """把模型 quote 定位回原文；失败返回 None（调用方计数并丢弃该点）。"""
         span = locate_quote(chapter_text, quote)
         if span is None:
@@ -178,7 +185,10 @@ class OpenAICompatProvider:
         data = self._chat_json(
             [
                 {"role": "system", "content": prompts.SYSTEM_MESSAGE},
-                {"role": "user", "content": prompts.thin_summary_user_message(book_title, first_chapter_text)},
+                {
+                    "role": "user",
+                    "content": prompts.thin_summary_user_message(book_title, first_chapter_text),
+                },
             ]
         )
         summary = str(data.get("thin_summary", "")).strip()
@@ -210,7 +220,11 @@ class OpenAICompatProvider:
         points: list[PlotPoint] = []
         for raw in raw_points[:40]:
             quote_text = str(raw.get("quote", "")).strip()
-            source = self._anchor(order, quote_text, chapter_text, chapter_hash) if quote_text else None
+            source = (
+                self._anchor(order, quote_text, chapter_text, chapter_hash)
+                if quote_text
+                else None
+            )
             if source is None:
                 self.diagnostics.unresolved_quotes += 1
                 self.diagnostics.dropped_plot_points += 1
@@ -251,11 +265,18 @@ class OpenAICompatProvider:
         data = self._chat_json(
             [
                 {"role": "system", "content": prompts.SYSTEM_MESSAGE},
-                {"role": "user", "content": prompts.golden_user_message(order, title, chapter_text)},
+                {
+                    "role": "user",
+                    "content": prompts.golden_user_message(order, title, chapter_text),
+                },
             ]
         )
-        opening_ref = self._anchor(order, str(data.get("opening_quote", "")), chapter_text, chapter_hash)
-        cliff_ref = self._anchor(order, str(data.get("cliffhanger_quote", "")), chapter_text, chapter_hash)
+        opening_ref = self._anchor(
+            order, str(data.get("opening_quote", "")), chapter_text, chapter_hash
+        )
+        cliff_ref = self._anchor(
+            order, str(data.get("cliffhanger_quote", "")), chapter_text, chapter_hash
+        )
         if opening_ref is None and str(data.get("opening_quote", "")).strip():
             self.diagnostics.empty_optional_quotes += 1
         if cliff_ref is None and str(data.get("cliffhanger_quote", "")).strip():

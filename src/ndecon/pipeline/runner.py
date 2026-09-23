@@ -23,7 +23,7 @@ def run_analyze(text: str, book_title: str, provider: DeconstructProvider) -> Re
     entries = build_entries(split)
 
     summaries = []
-    for boundary, entry in zip(split.boundaries, entries):
+    for boundary, entry in zip(split.boundaries, entries, strict=True):
         chapter_text = text[boundary.start : boundary.end]
         summaries.append(
             provider.summarize_chapter(
@@ -35,7 +35,7 @@ def run_analyze(text: str, book_title: str, provider: DeconstructProvider) -> Re
         )
 
     golden = []
-    for boundary, entry in list(zip(split.boundaries, entries))[:_GOLDEN_COUNT]:
+    for boundary, entry in list(zip(split.boundaries, entries, strict=True))[:_GOLDEN_COUNT]:
         chapter_text = text[boundary.start : boundary.end]
         golden.append(
             provider.golden_report(

@@ -77,7 +77,13 @@ def _map_themes(sentence: str) -> list[ThemeTag]:
     return tags or [ThemeTag.OTHER]
 
 
-def _make_source(order: int, sentence_start: int, sentence_end: int, chapter_text: str, h: str) -> SourceRef:
+def _make_source(
+    order: int,
+    sentence_start: int,
+    sentence_end: int,
+    chapter_text: str,
+    h: str,
+) -> SourceRef:
     """由句子偏移构造受 quote 长度上限约束的证据引用。"""
     end = min(sentence_end, sentence_start + _QUOTE_LIMIT)
     quote = chapter_text[sentence_start:end]

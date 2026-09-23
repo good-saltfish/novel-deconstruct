@@ -50,7 +50,9 @@ def test_offsets_roundtrip() -> None:
     """边界偏移切回原文必须以章题行开头、且四段拼起来等于全文。"""
     text = FIXTURE_PATH.read_text(encoding="utf-8")
     result = split_chapters(text)
-    for expected, boundary in zip(("第1章", "第2章", "第3章", "第4章"), result.boundaries):
+    for expected, boundary in zip(
+        ("第1章", "第2章", "第3章", "第4章"), result.boundaries, strict=True
+    ):
         assert text[boundary.start : boundary.end].startswith(expected)
     # preamble 与各章切片拼起来必须无损还原全文
     assert result.preamble + "".join(result.chapter_text(i) for i in range(4)) == text

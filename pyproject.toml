@@ -44,3 +44,11 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 # E/F 语法错误、I import 排序、UP 现代化语法、B 常见 bug、SIM 简化
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试中的长 fixture/断言以可读性优先，业界惯例
+"tests/**" = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer 的官方用法就是在默认参数中构造 Argument/Option，属 B008 已知误报
+extend-immutable-calls = ["typer.Argument", "typer.Option"]

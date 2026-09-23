@@ -81,16 +81,14 @@ def _loose_window(loose: str, needle: str, original: str) -> tuple[int, int] | N
 
 def _map_norm_span(original: str, norm_start: int, norm_end: int) -> tuple[int, int]:
     """把归一化文本的偏移区间映射回原文偏移。"""
-    norm = _norm(original)
     # 建立 norm 下标 -> original 下标 的映射（去空白导致多对一关系）
     pos_map: list[int] = []
-    norm_idx = 0
-    for orig_idx, ch in enumerate(unicodedata.normalize("NFKC", original).replace("\r\n", "\n").replace("\r", "\n")):
-        if _WS.fullmatch(ch):
-            continue
-        pos_map.append(orig_idx)
-        norm_idx += 1
+    normalized = (
+        unicodedata.normalize("NFKC", original).replace("\r\n", "\n").replace("\r", "\n")
+    )
+    for orig_idx, ch in enumerate(normalized):
+        if not _WS.fullmatch(ch):
+            pos_map.append(orig_idx)
     start = pos_map[norm_start]
     end = pos_map[min(norm_end - 1, len(pos_map) - 1)] + 1
-    _ = norm
     return start, end

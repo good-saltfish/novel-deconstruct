@@ -165,7 +165,9 @@ def split_chapters(text: str) -> SplitResult:
     boundaries: list[RawBoundary] = []
     for i, (line_no, start, order, title) in enumerate(heads):
         end = heads[i + 1][1] if i + 1 < len(heads) else len(text)
-        boundaries.append(RawBoundary(order=order, title=title, line_no=line_no, start=start, end=end))
+        boundaries.append(
+            RawBoundary(order=order, title=title, line_no=line_no, start=start, end=end)
+        )
 
     return SplitResult(
         text=text,

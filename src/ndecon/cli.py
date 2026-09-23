@@ -88,14 +88,20 @@ def analyze(
         raise typer.Exit(code=1) from exc
     write_bundle(out, bundle)
     typer.secho(
-        f"拆解完成：{len(bundle.entries)} 章 / 摘要 {len(bundle.summaries)} 份 / 黄金三章报告 {len(bundle.golden_reports)} 份 -> {out}",
+        f"拆解完成：{len(bundle.entries)} 章 / 摘要 {len(bundle.summaries)} 份 / "
+        f"黄金三章报告 {len(bundle.golden_reports)} 份 -> {out}",
         fg=typer.colors.GREEN,
     )
     for warning in bundle.warnings:
         typer.secho(f"告警：{warning}", fg=typer.colors.YELLOW)
     if provider == "openai-compat":
         diag = active_provider.diagnostics  # type: ignore[attr-defined]
-        if diag.http_retries or diag.dropped_plot_points or diag.truncated_chapters or diag.empty_optional_quotes:
+        if (
+            diag.http_retries
+            or diag.dropped_plot_points
+            or diag.truncated_chapters
+            or diag.empty_optional_quotes
+        ):
             typer.secho(
                 f"Provider 诊断：HTTP 重试 {diag.http_retries} 次；"
                 f"丢弃无证据情节点 {diag.dropped_plot_points} 个；"
