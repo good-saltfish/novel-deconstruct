@@ -15,6 +15,7 @@
 - **Stage 3 跨章聚合（#3）**：纯确定性统计——逐章主导基调与基调分布、爽点章节与章距（均值/最大空窗）、全书主题分布、角色出场矩阵（章号去重+提及计数）；产物 `剧情/节奏.md` + `data/aggregation.jsonl`，可从 chapters.jsonl 完全重算。
 - **开源发布（#7）**：仓库公开于 GitHub；CI 五检查全绿（Python 3.10/3.11/3.12 + ruff + 仓库卫生）；main 分支保护；Issue #1–#13 编号锁定；CI 徽章上 README。行长按中文全角宽度设为 120。
 - **PyPI 发布准备（#8）**：包名 novel-deconstruct 核验可用；补全发布元数据（classifiers/项目链接/关键词，PEP 639 SPDX 许可证表达式）；`python -m build` 产出 sdist+wheel，twine 校验通过；全新 venv 安装 wheel 后 `ndecon` 入口冒烟通过；CI 新增 package 构建校验 job；Release workflow 支持 tag 触发 OIDC 可信发布与手动仅构建演练；发布手册见 docs/releasing.md。
+- **本地项目面板（#15）**：`ndecon panel` 启动仅绑定 127.0.0.1 的 Web 工作台（stdlib http.server，零前端框架）；导入小说自动跑拆书管道入库（只存源路径与聚合 JSON，不复制原文）；新建长篇可挂参考书，FakeCreator 一键生成题材定位/首卷纲要/前 10 章细纲/主角人设/金手指（强制限制代价），学习注入仅传参考书聚合数字统计；模型产出为 draft、用户保存为 confirmed；新增 workspace/creation/panel 三个模块与 15 个测试（共 56 个全绿），面板静态资源打入 wheel 并经 CI 断言。
 
 ## [0.1.0] - 2026-09-22
 

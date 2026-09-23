@@ -112,5 +112,35 @@ def analyze(
         active_provider.close()  # type: ignore[attr-defined]
 
 
+@app.command()
+def panel(
+    workspace: Path = typer.Option(
+        Path(".ndecon-workspace"), "--workspace", help="项目工作区目录（项目 JSON 存放处）"
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅本机回环，勿改成 0.0.0.0"),
+    port: int = typer.Option(8765, "--port", help="监听端口；0 表示由系统分配"),
+    open_browser: bool = typer.Option(False, "--open", help="启动后自动打开浏览器"),
+) -> None:
+    """启动本地项目面板（拆书入库 + 长篇结构化创作工作台）。"""
+    from ndecon.panel.server import run_server
+
+    if host != "127.0.0.1":
+        typer.secho("安全提示：面板设计为本机使用，强烈建议保持 --host 127.0.0.1", fg=typer.colors.YELLOW)
+    server = run_server(workspace, host=host, port=port)
+    actual_host, actual_port = server.server_address
+    url = f"http://{actual_host}:{actual_port}"
+    typer.secho(f"ndecon 面板已启动：{url}（Ctrl+C 停止）", fg=typer.colors.GREEN)
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("\n面板已停止")
+    finally:
+        server.server_close()
+
+
 if __name__ == "__main__":
     app()

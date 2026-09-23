@@ -1,0 +1,132 @@
+:root {
+  --bg: #14161c;
+  --panel: #1c1f28;
+  --panel-2: #232734;
+  --line: #313747;
+  --text: #e8eaf0;
+  --muted: #9aa3b5;
+  --accent: #d9a441;
+  --accent-2: #4c9f70;
+  --danger: #c75c5c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-size: 18px; font-weight: 700; }
+.brand span { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 14px; }
+
+.btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1405; font-weight: 600; }
+.btn.small { padding: 3px 9px; font-size: 12px; }
+.btn.danger { color: var(--danger); }
+
+.layout { display: flex; min-height: calc(100vh - 57px); }
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  padding: 16px;
+  background: var(--panel);
+}
+.sidebar h2 { font-size: 13px; color: var(--muted); margin: 0 0 8px; letter-spacing: 1px; }
+.sidebar section { margin-bottom: 24px; }
+.project-list { list-style: none; margin: 0; padding: 0; }
+.project-list li {
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  font-size: 14px;
+  border: 1px solid transparent;
+}
+.project-list li:hover { background: var(--panel-2); }
+.project-list li.active { background: var(--panel-2); border-color: var(--accent); }
+.project-list .sub { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.detail { flex: 1; padding: 24px 28px; overflow-y: auto; }
+.empty { color: var(--muted); margin-top: 80px; text-align: center; }
+
+h3.proj-title { margin: 0 0 4px; font-size: 22px; }
+.proj-meta { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.card h4 { margin: 0 0 12px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+.badge.draft { color: var(--accent); border-color: var(--accent); }
+.badge.ok { color: var(--accent-2); border-color: var(--accent-2); }
+
+label.field { display: block; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
+input[type=text], textarea, select {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+}
+textarea { min-height: 56px; resize: vertical; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+
+.chapters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.chapter-card { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.chapter-card h5 { margin: 0 0 8px; color: var(--accent); font-size: 13px; }
+
+table.stats { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.stats th, table.stats td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+table.stats th { background: var(--panel-2); color: var(--muted); }
+
+.ref-pick { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.ref-pick label { font-size: 13px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 4px 12px; cursor: pointer; }
+.ref-pick input { margin-right: 5px; }
+
+dialog { border: none; background: transparent; padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.55); }
+.modal-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 22px;
+  width: 480px;
+  color: var(--text);
+}
+.modal-card h3 { margin: 0 0 14px; }
+.modal-card menu { display: flex; justify-content: flex-end; gap: 10px; padding: 0; margin: 16px 0 0; }
+.toast {
+  position: fixed; right: 24px; bottom: 24px;
+  background: var(--panel-2); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 10px 16px; font-size: 13px;
+}
+.toast.err { border-color: var(--danger); }

@@ -65,6 +65,8 @@ jobs:
           assert any(n.endswith("ndecon/cli.py") for n in names), "wheel 缺少 ndecon/cli.py"
           assert any(n.endswith("LICENSE") for n in names), "wheel 缺少 LICENSE"
           assert any("entry_points.txt" in n for n in names), "wheel 缺少 entry_points"
+          assert any(n.endswith("panel/web/index.html") for n in names), "wheel 缺少面板页面"
+          assert any(n.endswith("panel/web/app.js") for n in names), "wheel 缺少面板脚本"
           sdist = glob.glob("dist/*.tar.gz")[0]
           with tarfile.open(sdist) as t:
               members = t.getnames()

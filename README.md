@@ -45,7 +45,14 @@ ndecon analyze 我的小说.txt --out .out/mybook --provider fake
 #    base_url 默认 https://api.openai.com/v1，可指向任何兼容端点
 setx NOVEL_DECON_API_KEY "sk-..."          # 或 OPENAI_API_KEY
 ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --model gpt-4o-mini
+
+# 4) 本地创作面板（浏览器工作台：导入小说自动拆书 → 生成新长篇骨架）
+ndecon panel --workspace .ndecon-workspace --open
 ```
+
+浏览器打开后可以：导入小说文件（自动拆书入库，不复制原文）→ 新建长篇并勾选参考书
+→ 一键生成题材定位/首卷纲要/前 10 章细纲/主角人设/金手指（含限制代价）→ 逐部件编辑确认。
+面板仅监听 127.0.0.1，默认用内置 Fake 离线生成，不产生任何网络请求。
 
 产物：
 
