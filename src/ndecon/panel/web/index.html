@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ndecon · 小说创作面板</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">ndecon <span>小说创作面板</span></div>
+    <div class="actions">
+      <button id="btn-import" class="btn">导入小说拆书</button>
+      <button id="btn-new" class="btn primary">新建长篇</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section>
+        <h2>参考书（已拆书入库）</h2>
+        <ul id="ref-list" class="project-list"></ul>
+      </section>
+      <section>
+        <h2>我的长篇创作</h2>
+        <ul id="creation-list" class="project-list"></ul>
+      </section>
+    </aside>
+
+    <section id="detail" class="detail">
+      <div class="empty">从左侧选择项目，或点击右上角「导入小说拆书 / 新建长篇」开始。</div>
+    </section>
+  </main>
+
+  <dialog id="modal">
+    <form method="dialog" class="modal-card" id="modal-form">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <menu>
+        <button value="cancel" class="btn">取消</button>
+        <button id="modal-ok" value="ok" class="btn primary">确定</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

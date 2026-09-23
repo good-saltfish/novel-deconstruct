@@ -3,5 +3,6 @@ include LICENSE
 include CHANGELOG.md
 include README.md
 recursive-include src *.py
+recursive-include src/ndecon/panel/web *.html *.js *.css
 global-exclude *.py[cod]
 global-exclude __pycache__/*
