@@ -17,11 +17,13 @@ D:\Python\Python310\python.exe -m pip install -e ".[dev]"
 D:\Python\Python310\python.exe -m pytest
 ```
 
-可选（网络可用时）：
+可选（本地 ruff 提交钩子，与 CI lint 对齐；钩子为 repo: local，无需访问 GitHub）：
 
 ```powershell
-pip install pre-commit ruff
-pre-commit install
+D:\Python\Python310\python.exe -m pip install pre-commit ruff
+D:\Python\Python310\python.exe -m pre_commit install
+# 全量自检：
+D:\Python\Python310\python.exe -m pre_commit run --all-files
 ```
 
 ## 三、Issue 驱动（持续流，Kanban）

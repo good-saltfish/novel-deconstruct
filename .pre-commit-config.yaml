@@ -1,19 +1,12 @@
-# 本地 pre-commit（需要网络安装 pre-commit 后执行 `pre-commit install`）
-# ruff 钩子在本机网络恢复后启用；其余内置钩子零依赖。
+# 本地 pre-commit：与 CI 的 ruff 检查保持一致（ADR 见经验：本地/CI 度量必须对齐）。
+# 钩子全部 repo: local + language: system，直接调用本机已安装的 ruff，
+# 不 clone GitHub，断网/SSH-only 环境也能 `pre-commit install` 后正常使用。
+# 大文件与冲突标记由 CI 的 repo hygiene job 兜底。
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+  - repo: local
     hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-toml
-      - id: check-added-large-files
-        args: ["--maxkb=1024"]  # 版权正文保护：单文件超过 1MB 直接拦下
-      - id: check-merge-conflict
-  # 网络恢复后取消注释：
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.6.9
-  #   hooks:
-  #     - id: ruff
-  #       args: ["--fix"]
+      - id: ruff
+        name: ruff (lint, pinned by local install)
+        entry: ruff check
+        language: system
+        types_or: [python, pyi]

@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **本地 pre-commit 启用（#9）**：`.pre-commit-config.yaml` 改为 `repo: local` + `language: system` 直接调用本机 ruff 0.16.8，不再 clone GitHub（适配断网/SSH-only 环境）；pre-commit 4.6.2 已安装并 `pre-commit install`，`pre-commit run --all-files` 通过；CONTRIBUTING 安装说明同步。
+
 ### Added
 
 - 仓库工程流程：Issue/PR 模板、GitHub Actions CI、pre-commit、ADR、Kanban 看板、CONTRIBUTING。
