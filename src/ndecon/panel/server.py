@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,16 +18,21 @@ from urllib.request import Request
 
 from pydantic import ValidationError
 
+from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.models import (
     ChapterOutline,
     GoldenFingerSpec,
+    ManuscriptRecord,
     Positioning,
     ProtagonistProfile,
     VolumeOutline,
 )
 from ndecon.creation.providers import FakeCreator
 from ndecon.pipeline.runner import run_analyze
+from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
+from ndecon.providers.openai_compat import OpenAICompatProvider
+from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import (
     CreationProject,
     ProjectMeta,
@@ -116,7 +122,11 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
                 self._send_json(200, [m.model_dump() for m in store.list_projects()])
                 return
             if path.startswith("/api/projects/"):
-                self._get_project(path.split("/")[3])
+                parts = path.strip("/").split("/")
+                if len(parts) == 5 and parts[3] == "chapters":
+                    self._get_chapter(parts[2], parts[4])
+                else:
+                    self._get_project(path.split("/")[3])
                 return
             self._serve_static(path)
 
@@ -128,22 +138,37 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._error(400, "请求体不是合法 JSON")
                 return
+            parts = path.strip("/").split("/")
+            chapter_post = (
+                len(parts) == 6
+                and parts[:2] == ["api", "projects"]
+                and parts[3] == "chapters"
+                and parts[5] in ("generate", "confirm")
+            )
             if path == "/api/projects/import":
                 self._import_reference(payload)
             elif path == "/api/projects/create":
                 self._create_project(payload)
+            elif chapter_post:
+                if parts[5] == "generate":
+                    self._generate_chapter(parts[2], parts[4], payload)
+                else:
+                    self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/generate"):
                 self._generate(path.split("/")[3])
             else:
                 self._error(404, "未知接口")
 
         def do_PUT(self) -> None:  # noqa: N802
-            """处理 PUT：保存用户确认后的某部件内容。"""
+            """处理 PUT：保存骨架部件或编辑章节正文。"""
             path = unquote(urlparse(self.path).path)
             parts = path.strip("/").split("/")
             # /api/projects/{id}/parts/{part}
             if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "parts":
                 self._save_part(parts[2], parts[4])
+            # /api/projects/{id}/chapters/{order}
+            elif len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "chapters":
+                self._save_chapter(parts[2], parts[4])
             else:
                 self._error(404, "未知接口")
 
@@ -299,6 +324,139 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             project.confirmed_parts[part] = True
             store.save_creation(project)
             self._send_json(200, project.model_dump())
+
+        # ---- 章节正文（#16）----
+
+        def _load_creation_for_chapter(
+            self, project_id: str, order_text: str
+        ) -> tuple[CreationProject, ChapterOutline] | None:
+            """加载创作项目并定位细纲中的目标章；失败时已自行回复错误。"""
+            try:
+                order = int(order_text)
+            except (TypeError, ValueError):
+                self._error(400, f"章号必须是整数：{order_text!r}")
+                return None
+            if not 1 <= order <= 10:
+                self._error(400, "仅支持第 1-10 章")
+                return None
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return None
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可以写章节正文")
+                return None
+            target = next((c for c in project.draft.chapters if c.order == order), None)
+            if target is None:
+                self._error(400, "请先生成并保存包含该章的细纲")
+                return None
+            return project, target
+
+        def _chapter_payload(self, project: CreationProject, order: int) -> dict:
+            """组装章节响应：元数据记录 + 正文全文。"""
+            record = project.manuscripts.get(f"ch{order}")
+            return {
+                "record": record.model_dump() if record is not None else None,
+                "content": store.read_manuscript(project.meta.id, order),
+            }
+
+        def _generate_chapter(self, project_id: str, order_text: str, payload: dict) -> None:
+            """基于 ContextPack 生成一章正文候选与结构化自评（fake 离线/openai-compat）。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            provider_name = str(payload.get("provider", "fake")).strip() or "fake"
+            if provider_name == "fake":
+                writer = FakeChapterWriter()
+            elif provider_name == "openai-compat":
+                try:
+                    writer = OpenAICompatChapterWriter(
+                        OpenAICompatProvider(model=str(payload.get("model", "")).strip() or None)
+                    )
+                except ProviderError as exc:
+                    self._error(400, str(exc))
+                    return
+            else:
+                self._error(400, f"未知 provider：{provider_name}（可选 fake / openai-compat）")
+                return
+
+            # 唯一上下文来源：ContextPack（不含参考书原文/源路径）
+            pack = build_context_pack(project, target.order)
+            try:
+                writing = writer.write_chapter(pack)
+            except ProviderError as exc:
+                self._error(502, f"章节生成失败：{exc}")
+                return
+            store.write_manuscript(project_id, target.order, writing.content)
+            word_count = len(re.sub(r"\s+", "", writing.content))
+            project.manuscripts[f"ch{target.order}"] = ManuscriptRecord(
+                order=target.order,
+                title=target.title,
+                status="draft",
+                word_count=word_count,
+                model_id=writer.model_id,
+                prompt_version=writer.prompt_version,
+                updated_at=store.now_iso(),
+                review=writing.review,
+            )
+            store.save_creation(project)
+            self._send_json(200, self._chapter_payload(project, target.order))
+
+        def _get_chapter(self, project_id: str, order_text: str) -> None:
+            """读取一章的正文与元数据；尚未生成返回 404。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            if f"ch{target.order}" not in project.manuscripts:
+                self._error(404, "本章尚未生成正文")
+                return
+            self._send_json(200, self._chapter_payload(project, target.order))
+
+        def _save_chapter(self, project_id: str, order_text: str) -> None:
+            """保存人工编辑后的正文；回到候选态，自评保留但标记为模型期产物。"""
+            try:
+                payload = self._read_json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, "请求体不是合法 JSON")
+                return
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            if f"ch{target.order}" not in project.manuscripts:
+                self._error(400, "本章尚无正文，请先生成")
+                return
+            content = str(payload.get("content", ""))
+            if not content.strip():
+                self._error(422, "正文不能为空")
+                return
+            store.write_manuscript(project_id, target.order, content)
+            record = project.manuscripts[f"ch{target.order}"]
+            record.title = target.title
+            record.status = "draft"
+            record.word_count = len(re.sub(r"\s+", "", content))
+            record.model_id = "user-edit"
+            record.updated_at = store.now_iso()
+            store.save_creation(project)
+            self._send_json(200, self._chapter_payload(project, target.order))
+
+        def _confirm_chapter(self, project_id: str, order_text: str) -> None:
+            """把一章正文标记为用户确认；不改正文一个字。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            key = f"ch{target.order}"
+            if key not in project.manuscripts:
+                self._error(400, "本章尚无正文，无法确认")
+                return
+            project.manuscripts[key].status = "user-confirmed"
+            project.manuscripts[key].updated_at = store.now_iso()
+            store.save_creation(project)
+            self._send_json(200, self._chapter_payload(project, target.order))
 
         # ---- 静态资源 ----
 

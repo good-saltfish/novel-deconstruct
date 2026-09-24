@@ -84,6 +84,35 @@ def test_get_missing_raises_keyerror_and_delete_idempotent(tmp_path) -> None:
     store.delete("nope")  # 不抛异常
 
 
+def test_manuscript_write_read_and_scoped_path(tmp_path) -> None:
+    """章节正文写入 manuscripts/chNNN.md 并可读回；非法章号拒绝。"""
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-ms-1", "creation", "正文测试"),
+    )
+    store.save_creation(project)
+    path = store.write_manuscript("creation-ms-1", 1, "# 不写入章题\n\n第一段。")
+    assert path.name == "ch001.md"
+    assert path.parent.name == "manuscripts"
+    assert store.read_manuscript("creation-ms-1", 1) is not None
+    assert store.read_manuscript("creation-ms-1", 2) is None
+    for bad_order in (0, 11, -1, "1"):
+        with pytest.raises(ValueError):
+            store.write_manuscript("creation-ms-1", bad_order, "x")  # type: ignore[arg-type]
+
+
+def test_delete_removes_manuscript_subdir(tmp_path) -> None:
+    """删除项目时递归清掉 manuscripts 子目录（旧版只删文件会残留）。"""
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-ms-2", "creation", "删除测试"),
+    )
+    store.save_creation(project)
+    store.write_manuscript("creation-ms-2", 3, "正文")
+    store.delete("creation-ms-2")
+    assert not (tmp_path / "projects" / "creation-ms-2").exists()
+
+
 def test_project_artifact_filename_whitelist(tmp_path) -> None:
     """项目内 JSON 产物只接受安全文件名，拒绝目录穿越与可执行后缀。"""
     store = WorkspaceStore(tmp_path)
