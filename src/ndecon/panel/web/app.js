@@ -311,6 +311,7 @@ function renderCreation(p) {
           ${field("核心事件", "core_event", c.core_event, true)}
           ${field("开篇钩子", "opening_hook", c.opening_hook)}
           ${field("章尾钩子", "ending_hook", c.ending_hook)}`;
+        attachManuscript(inner, p.meta.id, c.order, (p.manuscripts || {})[`ch${c.order}`]);
         return inner;
       });
     const grid = document.createElement("div");
@@ -342,6 +343,113 @@ function renderCreation(p) {
 
 async function saveBase(projectId, patch) {
   return api("PATCH", `/api/projects/${projectId}`, patch);
+}
+
+function reviewHtml(review) {
+  if (!review) return '<div class="ms-review muted">暂无结构化自评</div>';
+  const deviations = (review.deviations || []).length
+    ? `<ul>${review.deviations.map((x) => `<li>${x}</li>`).join("")}</ul>`
+    : "<div>未发现与细纲偏差</div>";
+  return `<div class="ms-review">
+    <div><b>结构化自评</b>（${review.model_id} · ${review.prompt_version}）</div>
+    <div>钩子强度：${"★".repeat(review.hook_strength)}${"☆".repeat(5 - review.hook_strength)}
+      ｜信息密度：${"★".repeat(review.info_density)}${"☆".repeat(5 - review.info_density)}
+      ｜贴合细纲：${review.outline_followed ? "是" : "否"}</div>
+    <div><b>偏差点</b>${deviations}</div>
+    ${review.notes ? `<div class="muted">评语：${review.notes}</div>` : ""}
+  </div>`;
+}
+
+function attachManuscript(card, projectId, order, record) {
+  const bar = document.createElement("div");
+  bar.className = "ms-bar";
+  const badge = document.createElement("span");
+  const setBadge = (rec) => {
+    badge.className = "badge " + (rec ? (rec.status === "user-confirmed" ? "ok" : "draft") : "");
+    badge.textContent = rec
+      ? (rec.status === "user-confirmed" ? `正文已确认 · ${rec.word_count}字` : `正文候选 · ${rec.word_count}字`)
+      : "正文未生成";
+  };
+  setBadge(record);
+  bar.appendChild(badge);
+
+  const mkBtn = (text, cls, onClick) => {
+    const b = document.createElement("button");
+    b.className = "btn " + cls;
+    b.textContent = text;
+    b.onclick = onClick;
+    bar.appendChild(b);
+    return b;
+  };
+
+  const panel = document.createElement("div");
+  panel.className = "ms-panel";
+  panel.style.display = "none";
+  panel.innerHTML = `${reviewHtml(null)}
+    <textarea class="ms-content" rows="16" placeholder="正文将显示在这里，可直接编辑后保存"></textarea>
+    <div class="ms-actions">
+      <button class="btn small primary ms-save">保存修改（候选态）</button>
+      <button class="btn small ms-confirm">确认本章</button>
+    </div>`;
+
+  const fillPanel = (data) => {
+    panel.querySelector(".ms-content").value = data.content || "";
+    panel.querySelector(".ms-review").outerHTML = reviewHtml(data.record?.review);
+    setBadge(data.record);
+  };
+
+  const openPanel = async () => {
+    const visible = panel.style.display !== "none";
+    panel.style.display = visible ? "none" : "block";
+    if (!visible && !panel.querySelector(".ms-content").value) {
+      try {
+        const data = await api("GET", `/api/projects/${projectId}/chapters/${order}`);
+        fillPanel(data);
+      } catch (err) {
+        panel.style.display = "none";
+        toast(err.message, true);
+      }
+    }
+  };
+  mkBtn("查看/编辑", "small", openPanel);
+
+  const generate = async (provider) => {
+    toast(provider === "fake" ? "正在生成正文（离线 Fake）…" : "正在调用 openai-compat…");
+    try {
+      const data = await api("POST", `/api/projects/${projectId}/chapters/${order}/generate`, { provider });
+      panel.style.display = "block";
+      fillPanel(data);
+      toast("正文已生成为候选");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+  mkBtn("生成正文·Fake", "small primary", () => generate("fake"));
+  mkBtn("生成正文·AI", "small", () => generate("openai-compat"));
+
+  panel.querySelector(".ms-save").onclick = async () => {
+    try {
+      const data = await api("PUT", `/api/projects/${projectId}/chapters/${order}`, {
+        content: panel.querySelector(".ms-content").value,
+      });
+      fillPanel(data);
+      toast("修改已保存（候选态，需确认）");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+  panel.querySelector(".ms-confirm").onclick = async () => {
+    try {
+      const data = await api("POST", `/api/projects/${projectId}/chapters/${order}/confirm`);
+      fillPanel(data);
+      toast("本章正文已确认");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  };
+
+  card.appendChild(bar);
+  card.appendChild(panel);
 }
 
 function renderDetail(p) {

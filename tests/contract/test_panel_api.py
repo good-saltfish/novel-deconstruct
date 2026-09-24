@@ -103,6 +103,120 @@ def test_import_missing_file_400(server) -> None:
     assert "不存在" in body["error"]
 
 
+def test_chapter_writing_loop_generate_edit_confirm(server) -> None:
+    """#16 章节闭环：生成候选→读取→编辑保存→确认；正文落盘、状态分层正确。"""
+    _, cre = api_request(
+        server, "POST", "/api/projects/create", {"title": "章节书", "genre": "都市", "premise": ""}
+    )
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    # 1) Fake 生成第 1 章候选
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/generate", {"provider": "fake"}
+    )
+    assert status == 200, body
+    record = body["record"]
+    assert record["status"] == "draft"
+    assert record["model_id"] == "rule:fake-chapter"
+    assert record["prompt_version"] == "cw-v0"
+    assert record["word_count"] > 0
+    assert record["review"]["hook_strength"] in (1, 2, 3, 4, 5)
+    assert "Fake 占位正文" in body["content"]
+
+    # 2) GET 读回同一正文
+    status, again = api_request(server, "GET", f"/api/projects/{cre_id}/chapters/1")
+    assert status == 200 and again["content"] == body["content"]
+
+    # 3) 未生成的章节 404
+    status, _ = api_request(server, "GET", f"/api/projects/{cre_id}/chapters/2")
+    assert status == 404
+
+    # 4) 人工编辑保存：回到候选态，标记 user-edit，字数重算
+    edited = "人工改写的第一段。\n\n  第二段带空白 "
+    status, saved = api_request(
+        server, "PUT", f"/api/projects/{cre_id}/chapters/1", {"content": edited}
+    )
+    assert status == 200
+    assert saved["record"]["model_id"] == "user-edit"
+    assert saved["record"]["status"] == "draft"
+    assert saved["record"]["word_count"] == len("人工改写的第一段。第二段带空白")
+    assert saved["content"].startswith("人工改写")
+
+    # 5) 空正文 422
+    status, empty = api_request(
+        server, "PUT", f"/api/projects/{cre_id}/chapters/1", {"content": "   \n"}
+    )
+    assert status == 422
+    assert "不能为空" in empty["error"]
+
+    # 6) 确认章节
+    status, confirmed = api_request(server, "POST", f"/api/projects/{cre_id}/chapters/1/confirm")
+    assert status == 200
+    assert confirmed["record"]["status"] == "user-confirmed"
+
+    # 7) 项目详情携带稿件记录；删除后正文文件一并消失
+    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
+    assert full["manuscripts"]["ch1"]["status"] == "user-confirmed"
+    from pathlib import Path as _Path
+
+    ms_file = _Path(server.workspace_store.root) / "projects" / cre_id / "manuscripts" / "ch001.md"
+    assert ms_file.is_file()
+    api_request(server, "DELETE", f"/api/projects/{cre_id}")
+    assert not ms_file.exists()
+
+
+def test_chapter_generation_guards(server, monkeypatch) -> None:
+    """章节生成的边界：无细纲/非法章号/参考书项目/openai-compat 缺 key 都被拒绝。"""
+    # 无骨架的空创作项目
+    _, empty = api_request(server, "POST", "/api/projects/create", {"title": "空书"})
+    empty_id = empty["meta"]["id"]
+    status, body = api_request(
+        server, "POST", f"/api/projects/{empty_id}/chapters/1/generate", {"provider": "fake"}
+    )
+    assert status == 400 and "细纲" in body["error"]
+
+    # 有骨架的项目用于后续边界
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "正常书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/11/generate", {"provider": "fake"}
+    )
+    assert status == 400 and "1-10" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/xyz/generate", {"provider": "fake"}
+    )
+    assert status == 400 and "整数" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/generate", {"provider": "gpt-xyz"}
+    )
+    assert status == 400 and "未知 provider" in body["error"]
+
+    # openai-compat 在无 key 环境下应给出 400 而非 500
+    monkeypatch.delenv("NOVEL_DECON_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/generate", {"provider": "openai-compat"}
+    )
+    assert status == 400 and "key" in body["error"].lower()
+
+    # 参考书项目不能写正文
+    status, ref = api_request(
+        server, "POST", "/api/projects/import",
+        {"name": "参考书", "file_path": str(FIXTURE)},
+    )
+    assert status == 201
+    status, body = api_request(
+        server, "POST", f"/api/projects/{ref['meta']['id']}/chapters/1/generate",
+        {"provider": "fake"},
+    )
+    assert status == 400 and "创作项目" in body["error"]
+
+
 def test_static_index_served(server) -> None:
     """面板首页与静态资源可被服务（浏览器入口）。"""
     import urllib.request

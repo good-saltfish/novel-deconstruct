@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -114,11 +115,29 @@ class WorkspaceStore:
         self._atomic_write_json(path, payload)
         return path
 
+    def _manuscript_path(self, project_id: str, order: int) -> Path:
+        """返回某章正文文件路径；章号由调用方限定 1-10，文件名服务端生成防穿越。"""
+        if not isinstance(order, int) or not 1 <= order <= 10:
+            raise ValueError(f"非法章号：{order!r}（仅支持 1-10）")
+        return self._project_dir(project_id) / "manuscripts" / f"ch{order:03d}.md"
+
+    def write_manuscript(self, project_id: str, order: int, content: str) -> Path:
+        """原子写入章节正文 Markdown（manuscripts/chNNN.md），返回文件路径。"""
+        path = self._manuscript_path(project_id, order)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+        return path
+
+    def read_manuscript(self, project_id: str, order: int) -> str | None:
+        """读取章节正文；尚未生成时返回 None。"""
+        path = self._manuscript_path(project_id, order)
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
     def delete(self, project_id: str) -> None:
-        """删除整个项目目录；不存在时静默（删除操作天然幂等）。"""
+        """删除整个项目目录（含 manuscripts 子目录）；不存在时静默（删除幂等）。"""
         _assert_safe(project_id)
         path = self.projects_dir / project_id
         if path.is_dir():
-            for child in path.iterdir():
-                child.unlink()
-            path.rmdir()
+            shutil.rmtree(path)

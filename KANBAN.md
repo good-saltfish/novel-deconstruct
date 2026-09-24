@@ -10,7 +10,6 @@
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
 | #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
-| #16 | 章节正文生成与章节自评（面板第二轮） | 作为作者，我想在确认的细纲上生成章节正文并得到自评 | 依赖 #15 骨架；正文为候选可编辑；引用细纲/人设一致性校验；openai-compat 面板接入；**上下文改用 #17 的 ContextPack** | type/feature priority/high |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文 | type/feature priority/low |
 | #9 | 本地 ruff/pre-commit 启用 | 作为维护者，我要在网络恢复后让本地 lint 与 CI 一致 | ruff 0.16.8 已装、存量零告警；pre-commit install 待执行（HTTPS git 需走 SSH 改写） | type/chore priority/low |
 
@@ -42,3 +41,4 @@
 | #8 | PyPI 发布准备 | PyPI 核名可用；sdist+wheel 构建与 twine 校验通过；全新 venv 装 wheel 后 CLI 冒烟通过；CI package job + Release workflow（OIDC，手动可仅构建演练）；docs/releasing.md。首次实际发布见 #14 | 2026-09-23 |
 | #15 | 本地项目面板：拆书入库+结构化创作 | `ndecon panel` 回环 Web 面板；导入自动拆书不存原文；五部件骨架 Fake 生成+draft/confirmed 分层；参考书聚合数字注入；56 测试全绿；真机四路径冒烟；静态资源入 wheel 并 CI 断言 | 2026-09-23 |
 | #17 | L1 一致性 RAG：bigram BM25 + Recall@10 金标基线 | `ndecon.retrieval`（分词/BM25/索引器/伏笔台账/ContextPack/评测）；参考书类型级拒入、quote 结构性不读；CC0 12 章 16 问金标，Macro Recall@10=0.875 冻结入 CI；`ndecon reindex`；96 测试全绿 | 2026-09-23 |
+| #16 | 章节正文生成与结构化自评 | `creation.chapters`（cw-v0）：Fake 占位 + openai-compat，唯一输入 ContextPack；结构化自评（钩子/密度/偏差）；面板章节生成/编辑/确认闭环；正文落 manuscripts/chNNN.md 候选/确认分层；107 测试全绿 | 2026-09-24 |
