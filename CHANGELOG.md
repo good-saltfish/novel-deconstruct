@@ -11,6 +11,7 @@
 
 ### Added
 
+- 调研报告《RAG 用于长篇写作：开源项目与学术论文全景》（docs/research/2026-09-25-rag-writing-landscape.md）：10 个开源项目（星标/许可证一手核验）+ 12 篇论文详录、横向对比、对 L0–L3 决策的外部验证与缺口建议（写后投影/矛盾检测/L2 技术栈佐证）。
 - 仓库工程流程：Issue/PR 模板、GitHub Actions CI、pre-commit、ADR、Kanban 看板、CONTRIBUTING。
 - **OpenAI 兼容 Provider（#2）**：`--provider openai-compat`，支持 `NOVEL_DECON_API_KEY`/`OPENAI_API_KEY`、自定义 `OPENAI_BASE_URL` 与 `--model`；JSON 结构化输出、429/5xx 指数退避重试、错误四分类（配置/HTTP/响应/Schema）。
 - **证据锚定器**：模型只给 quote 文本，字符偏移由本地三级匹配（精确→NFKC 空白滑窗→去标点滑窗）唯一定位；无法定位的情节点丢弃计数，绝不伪造证据。
