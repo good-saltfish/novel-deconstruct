@@ -51,7 +51,17 @@ ndecon panel --workspace .ndecon-workspace --open
 
 # 5) 为创作项目重建 L1 一致性检索索引（中文 bigram BM25，纯本地离线，ADR-0004）
 ndecon reindex creation-mybook-1 --workspace .ndecon-workspace
+
+# 6) 把本地写作资料库建成学习型知识库（L0.5，ADR-0005；版权小说全文自动硬排除）
+ndecon kb index --root "D:\novel-project\网文写作" --workspace .ndecon-workspace
+ndecon kb search "卡普曼三角 期待感" --workspace .ndecon-workspace
+#    也可用环境变量指定资料库：setx NOVEL_DECON_KB_ROOTS "D:\path1;D:\path2"
 ```
+
+骨架生成时会自动检索知识库中与题材/设定相关的**方法论片段**（带来源标注）注入 prompt；
+支持 md/txt（GBK 兼容）/docx，小说全文（原文目录、"书名 - 作者.txt"、前40章、章节体 txt、
+采集缓存）在入库环节被硬排除，审计清单见 `kb/manifest.json`。知识库只服务大纲/设定生成，
+章节正文生成仍只使用本书 ContextPack。
 
 L1 检索只索引**本书**已确认的骨架部件（与后续已写章节的结构化摘要），
 参考书原文与 quote 在类型与代码两层都无法进入索引；

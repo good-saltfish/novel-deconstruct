@@ -1,5 +1,6 @@
 """面板 API 端到端契约：导入→学习统计→生成→编辑确认→删除。"""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,41 @@ def test_import_missing_file_400(server) -> None:
     )
     assert status == 400
     assert "不存在" in body["error"]
+
+
+def test_skeleton_generation_uses_kb_and_blocks_novel_text(server, tmp_path) -> None:
+    """#21 L0.5：工作区有知识库时，骨架生成注入方法论；被排除小说原文绝不出现。"""
+    from ndecon.kb.corpus import build_knowledge_index, write_knowledge_artifacts
+
+    secret = "版权密语苏晓林盏周伯影兽第六百六十六章"
+    library = tmp_path / "library"
+    (library / "方法论").mkdir(parents=True)
+    (library / "方法论" / "卡普曼写法.md").write_text(
+        "# 卡普曼三角冲突写法\n"
+        "都市异能题材开篇五百字内必须让卡普曼三角开转，先抑后扬，金手指当场付代价。\n",
+        encoding="utf-8",
+    )
+    (library / "某书 - 某作者.txt").write_text(secret + "\n" + "正文" * 100, encoding="utf-8")
+
+    index, manifest = build_knowledge_index([library])
+    write_knowledge_artifacts(server.workspace_store.root, [library], index, manifest)
+    assert all(secret not in (item.relative_path + item.reason) for item in manifest if item.included)
+
+    _, cre = api_request(
+        server, "POST", "/api/projects/create",
+        {"title": "卡普曼测试书", "genre": "都市异能", "premise": "开篇三角冲突"},
+    )
+    cre_id = cre["meta"]["id"]
+    status, generated = api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+    assert status == 200
+
+    draft_json = json.dumps(generated, ensure_ascii=False)
+    # 方法论片段确定性进入 Fake 卖点
+    selling = generated["draft"]["positioning"]["selling_points"]
+    assert any("方法论参考" in point and "卡普曼" in point for point in selling)
+    # 版权小说特征串不进入任何生成结果
+    assert "版权密语" not in draft_json
+    assert "某作者" not in draft_json
 
 
 def test_chapter_writing_loop_generate_edit_confirm(server) -> None:

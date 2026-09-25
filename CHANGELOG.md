@@ -11,6 +11,7 @@
 
 ### Added
 
+- **L0.5 学习型写作知识库（#21，ADR-0005）**：新增 `ndecon.kb`——扫描本地写作资料目录，方法论/教学/素材（md/txt/docx，docx 用 stdlib zipfile 零依赖、GBK 回退）确定性切块建 bigram BM25 索引，落盘工作区 `kb/index.json` + `manifest.json`（逐文件收录/排除原因审计）；版权小说原文多重硬排除（`原文/` 目录、书名-作者命名、前40章/单章/采集缓存、txt >1MB、章节标题启发式），启发式对自研分析类文件名跳过（真实 dogfood 修正误伤）。CLI `ndecon kb index/search`；骨架生成（Fake/openai-compat/面板）自动检索注入带来源的"写作方法论参考"，正文生成不接入；无索引时完全降级。真实资料库实测：收录 254 文件/33142 块、排除 114 文件。新增 22 个测试（共 129 全绿）。
 - 调研报告《RAG 用于长篇写作：开源项目与学术论文全景》（docs/research/2026-09-25-rag-writing-landscape.md）：10 个开源项目（星标/许可证一手核验）+ 12 篇论文详录、横向对比、对 L0–L3 决策的外部验证与缺口建议（写后投影/矛盾检测/L2 技术栈佐证）。
 - 仓库工程流程：Issue/PR 模板、GitHub Actions CI、pre-commit、ADR、Kanban 看板、CONTRIBUTING。
 - **OpenAI 兼容 Provider（#2）**：`--provider openai-compat`，支持 `NOVEL_DECON_API_KEY`/`OPENAI_API_KEY`、自定义 `OPENAI_BASE_URL` 与 `--model`；JSON 结构化输出、429/5xx 指数退避重试、错误四分类（配置/HTTP/响应/Schema）。

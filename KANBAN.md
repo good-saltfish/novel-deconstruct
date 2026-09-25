@@ -10,7 +10,7 @@
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
 | #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
-| #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文 | type/feature priority/low |
+| #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文；**可复用 #21 知识库检索** | type/feature priority/low |
 
 ## Icebox（不承诺排期，触发条件满足才进 Backlog）
 

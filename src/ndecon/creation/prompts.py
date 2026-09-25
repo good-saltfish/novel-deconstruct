@@ -83,14 +83,39 @@ def _outline_spec() -> dict:
     }
 
 
+def knowledge_brief(snippets: list[dict]) -> str:
+    """把本地知识库命中片段渲染为带来源的方法论参考区块；空列表返回空串。
+
+    片段由 ndecon.kb 检索产生（只含方法论/教学/素材，版权小说原文在入库时已排除）。
+    """
+    if not snippets:
+        return ""
+    lines = ["【写作方法论参考】（来自作者本地知识库；借鉴手法与结构，严禁照抄具体作品情节）："]
+    for i, snippet in enumerate(snippets, start=1):
+        heading = snippet.get("heading") or ""
+        title_part = f"《{heading}》 " if heading else ""
+        lines.append(f"{i}. 来源 {snippet.get('source', '?')} {title_part}\n   {snippet.get('text', '')}")
+    return "\n".join(lines)
+
+
 def full_draft_user_message(
-    title: str, genre: str, premise: str, reference_stats: list[dict]
+    title: str,
+    genre: str,
+    premise: str,
+    reference_stats: list[dict],
+    knowledge_snippets: list[dict] | None = None,
 ) -> str:
     """组装一次性生成全部骨架部件的用户消息。"""
-    return (
+    sections = [
         f"新长篇标题：{title}\n题材：{genre or '由你根据设定判断'}\n"
-        f"一句话设定：{premise}\n\n"
-        f"参考拆书统计（仅数字手感，禁止照抄情节）：\n{learning_brief(reference_stats)}\n\n"
+        f"一句话设定：{premise}\n",
+        f"参考拆书统计（仅数字手感，禁止照抄情节）：\n{learning_brief(reference_stats)}",
+    ]
+    knowledge = knowledge_brief(knowledge_snippets or [])
+    if knowledge:
+        sections.append(knowledge)
+    sections.append(
         "请输出完整骨架 JSON（chapters 恰好 10 条，order 为 1-10）：\n"
         + json.dumps(_outline_spec(), ensure_ascii=False)
     )
+    return "\n\n".join(sections)

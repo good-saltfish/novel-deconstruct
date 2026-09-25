@@ -92,6 +92,36 @@ def test_openai_compat_without_key_fails_cleanly(
     assert "API key" in result.output or "key" in result.output.lower()
 
 
+def test_kb_index_and_search_commands(tmp_path: Path) -> None:
+    """kb index 建库（排除小说原文）并可 search 命中方法论；无 root 时报错。"""
+    library = tmp_path / "library"
+    (library / "心得").mkdir(parents=True)
+    (library / "心得" / "方法论.md").write_text(
+        "# 期待感设计\n每章结尾留一个未回答的问题，期待感是网文追读的核心。\n", encoding="utf-8"
+    )
+    (library / "某书 - 某作者.txt").write_text(
+        "\n".join(f"第{i}章 小说内容" for i in range(1, 20)), encoding="utf-8"
+    )
+    workspace = tmp_path / "ws"
+
+    result = CliRunner().invoke(
+        app, ["kb", "index", "--root", str(library), "--workspace", str(workspace)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "知识库已建立" in result.output
+    assert "某书 - 某作者.txt" in result.output  # 排除清单输出
+
+    search_result = CliRunner().invoke(
+        app, ["kb", "search", "期待感 追读", "--workspace", str(workspace)]
+    )
+    assert search_result.exit_code == 0
+    assert "方法论.md" in search_result.output and "期待感" in search_result.output
+
+    # 无 root 且无环境变量时拒绝建库
+    missing = CliRunner().invoke(app, ["kb", "index", "--workspace", str(workspace / "x")])
+    assert missing.exit_code != 0 and "NOVEL_DECON_KB_ROOTS" in missing.output
+
+
 def test_reindex_command_writes_index(tmp_path: Path) -> None:
     """reindex 对创作项目退出 0，并在项目目录落盘含语料的 index.json。"""
     project_id = _save_creation_project(tmp_path, confirmed=True)

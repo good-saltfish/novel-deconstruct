@@ -169,5 +169,64 @@ def reindex(
     )
 
 
+@app.command()
+def kb(
+    action: str = typer.Argument(..., help="操作：index（建库）或 search（查询）"),
+    query: str = typer.Argument("", help="search 操作的查询文本"),
+    roots: list[Path] = typer.Option(
+        [], "--root", help="资料库根目录，可重复；index 时缺省读 NOVEL_DECON_KB_ROOTS（分号分隔）"
+    ),
+    workspace: Path = typer.Option(
+        Path(".ndecon-workspace"), "--workspace", help="项目工作区目录（kb/ 产物存放处）"
+    ),
+    top_k: int = typer.Option(5, "--top-k", help="search 返回条数"),
+) -> None:
+    """管理学习型写作知识库（L0.5，ADR-0005）：扫描资料库建库或检索方法论片段。"""
+    import os
+
+    from ndecon.kb.corpus import (
+        build_knowledge_index,
+        search_knowledge,
+        write_knowledge_artifacts,
+    )
+
+    if action == "index":
+        root_paths = list(roots)
+        if not root_paths:
+            env_roots = os.environ.get("NOVEL_DECON_KB_ROOTS", "")
+            root_paths = [Path(part.strip()) for part in env_roots.split(";") if part.strip()]
+        root_paths = [path for path in root_paths if path.is_dir()]
+        if not root_paths:
+            raise typer.BadParameter(
+                "没有可用的资料库目录：用 --root 指定，或设置 NOVEL_DECON_KB_ROOTS（分号分隔）"
+            )
+        index, manifest = build_knowledge_index(root_paths)
+        directory = write_knowledge_artifacts(workspace, root_paths, index, manifest)
+        included = sum(1 for item in manifest if item.included)
+        excluded = len(manifest) - included
+        typer.secho(
+            f"知识库已建立：{len(index.documents)} 个知识块 / 收录 {included} 个文件、"
+            f"排除 {excluded} 个 -> {directory}",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo("审计清单：kb/manifest.json（含每个文件的收录/排除原因）")
+        for item in manifest:
+            if not item.included:
+                typer.secho(f"  排除：{item.relative_path} —— {item.reason}", fg=typer.colors.YELLOW)
+    elif action == "search":
+        if not query.strip():
+            raise typer.BadParameter("search 需要提供查询文本")
+        snippets = search_knowledge(workspace, query, k=top_k)
+        if not snippets:
+            typer.secho("无命中（或尚未建库：先运行 ndecon kb index --root <目录>）", fg=typer.colors.YELLOW)
+            return
+        for i, snippet in enumerate(snippets, start=1):
+            heading_part = f"《{snippet.heading}》" if snippet.heading else ""
+            typer.echo(f"\n{i}. [{snippet.score:.3f}] {snippet.source} {heading_part}")
+            typer.echo(f"   {snippet.text[:200]}")
+    else:
+        raise typer.BadParameter(f"未知操作：{action}（可选 index / search）")
+
+
 if __name__ == "__main__":
     app()
