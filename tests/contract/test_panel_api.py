@@ -232,13 +232,13 @@ def test_chapter_generation_guards(server, monkeypatch) -> None:
     )
     assert status == 400 and "未知 provider" in body["error"]
 
-    # openai-compat 在无 key 环境下应给出 400 而非 500
+    # AI 生成在面板未配置供应商时给出 400 与明确引导（不走网络、不静默回退）
     monkeypatch.delenv("NOVEL_DECON_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     status, body = api_request(
-        server, "POST", f"/api/projects/{cre_id}/chapters/1/generate", {"provider": "openai-compat"}
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/generate", {"provider": "ai"}
     )
-    assert status == 400 and "key" in body["error"].lower()
+    assert status == 400 and "模型设置" in body["error"]
 
     # 参考书项目不能写正文
     status, ref = api_request(
