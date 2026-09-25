@@ -27,12 +27,18 @@ from ndecon.creation.models import (
     ProtagonistProfile,
     VolumeOutline,
 )
-from ndecon.creation.providers import FakeCreator
+from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
 from ndecon.kb.corpus import search_knowledge
+from ndecon.llm.catalog import catalog_payload
+from ndecon.llm.session import (
+    LLMSession,
+    LLMSessionConfig,
+    test_connection,
+    validate_config_payload,
+)
 from ndecon.pipeline.runner import run_analyze
 from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
-from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import (
     CreationProject,
@@ -78,8 +84,8 @@ def _reference_stats(store: WorkspaceStore, reference_ids: list[str]) -> list[di
     return stats
 
 
-def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
-    """生成绑定特定工作区的请求处理器类。"""
+def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseHTTPRequestHandler]:
+    """生成绑定特定工作区与 LLM 会话的请求处理器类。"""
 
     class PanelHandler(BaseHTTPRequestHandler):
         """面板 HTTP 处理器：JSON API 与静态资源。"""
@@ -119,6 +125,12 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             if path == "/api/health":
                 self._send_json(200, {"ok": True})
                 return
+            if path == "/api/llm/providers":
+                self._send_json(200, catalog_payload())
+                return
+            if path == "/api/llm/settings":
+                self._send_json(200, llm_session.public_view())
+                return
             if path == "/api/projects":
                 self._send_json(200, [m.model_dump() for m in store.list_projects()])
                 return
@@ -150,20 +162,31 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
                 self._import_reference(payload)
             elif path == "/api/projects/create":
                 self._create_project(payload)
+            elif path == "/api/llm/test":
+                self._test_llm(payload)
             elif chapter_post:
                 if parts[5] == "generate":
                     self._generate_chapter(parts[2], parts[4], payload)
                 else:
                     self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/generate"):
-                self._generate(path.split("/")[3])
+                self._generate(path.split("/")[3], payload)
             else:
                 self._error(404, "未知接口")
 
         def do_PUT(self) -> None:  # noqa: N802
-            """处理 PUT：保存骨架部件或编辑章节正文。"""
+            """处理 PUT：保存 LLM 配置、骨架部件或编辑章节正文。"""
             path = unquote(urlparse(self.path).path)
             parts = path.strip("/").split("/")
+            # /api/llm/settings
+            if parts == ["api", "llm", "settings"]:
+                try:
+                    payload = self._read_json()
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    self._error(400, "请求体不是合法 JSON")
+                    return
+                self._save_llm_settings(payload)
+                return
             # /api/projects/{id}/parts/{part}
             if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "parts":
                 self._save_part(parts[2], parts[4])
@@ -248,8 +271,49 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             store.save_creation(project)
             self._send_json(201, project.model_dump())
 
-        def _generate(self, project_id: str) -> None:
-            """用 FakeCreator 生成完整骨架（离线可重放），候选态入库。"""
+        def _save_llm_settings(self, payload: dict) -> None:
+            """校验并保存面板 LLM 配置（key 仅进进程内存）。
+
+            同一供应商再次保存且 key 留空时，保留会话中已有的 key（便于只改模型/URL）。
+            """
+            payload = dict(payload)
+            if (
+                not str(payload.get("api_key", "")).strip()
+                and llm_session.provider == str(payload.get("provider", "")).strip()
+                and llm_session.api_key
+            ):
+                payload["api_key"] = llm_session.api_key
+            config, error = validate_config_payload(payload)
+            if error is not None:
+                self._error(400, error)
+                return
+            llm_session.update(config)
+            self._send_json(200, llm_session.public_view())
+
+        def _test_llm(self, payload: dict) -> None:
+            """用请求中的配置做连通性测试（不保存）；空 body 时测试已保存配置。"""
+            if payload:
+                config, error = validate_config_payload(payload)
+                if error is not None:
+                    self._error(400, error)
+                    return
+            else:
+                if not llm_session.is_configured():
+                    self._error(400, "尚未保存配置，且本次测试未提供配置")
+                    return
+                config = LLMSessionConfig(
+                    provider=llm_session.provider,
+                    api_key=llm_session.api_key,
+                    base_url=llm_session.base_url,
+                    model=llm_session.model,
+                )
+            result = test_connection(config)
+            if not result["ok"]:
+                result["error"] = result["detail"]
+            self._send_json(200 if result["ok"] else 502, result)
+
+        def _generate(self, project_id: str, payload: dict) -> None:
+            """生成完整骨架：provider=fake（默认离线）或 ai（面板已保存的 LLM 配置）。"""
             try:
                 project = store.get(project_id)
             except KeyError:
@@ -258,7 +322,16 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             if not isinstance(project, CreationProject):
                 self._error(400, "只有创作项目可以生成骨架")
                 return
-            creator = FakeCreator()
+            use_ai = str(payload.get("provider", "fake")).strip() in ("ai", "openai-compat")
+            if use_ai:
+                try:
+                    provider = llm_session.require_provider()
+                    creator = OpenAICompatCreator(provider)
+                except ProviderError as exc:
+                    self._error(400, str(exc))
+                    return
+            else:
+                creator = FakeCreator()
             stats = _reference_stats(store, project.reference_ids)
             # L0.5 学习型知识库：工作区已建库时，按书名/题材/设定检索方法论片段（无索引则空）
             knowledge_query = "\n".join(
@@ -376,16 +449,14 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
             provider_name = str(payload.get("provider", "fake")).strip() or "fake"
             if provider_name == "fake":
                 writer = FakeChapterWriter()
-            elif provider_name == "openai-compat":
+            elif provider_name in ("openai-compat", "ai"):
                 try:
-                    writer = OpenAICompatChapterWriter(
-                        OpenAICompatProvider(model=str(payload.get("model", "")).strip() or None)
-                    )
+                    writer = OpenAICompatChapterWriter(llm_session.require_provider())
                 except ProviderError as exc:
                     self._error(400, str(exc))
                     return
             else:
-                self._error(400, f"未知 provider：{provider_name}（可选 fake / openai-compat）")
+                self._error(400, f"未知 provider：{provider_name}（可选 fake / ai）")
                 return
 
             # 唯一上下文来源：ContextPack（不含参考书原文/源路径）
@@ -498,8 +569,10 @@ def run_server(
 ) -> ThreadingHTTPServer:
     """构建并返回面板服务器（已 listen，未 serve_forever；便于测试与 CLI 复用）。"""
     store = WorkspaceStore(workspace)
-    server = ThreadingHTTPServer((host, port), create_handler(store))
+    llm_session = LLMSession()
+    server = ThreadingHTTPServer((host, port), create_handler(store, llm_session))
     server.workspace_store = store  # type: ignore[attr-defined]
+    server.llm_session = llm_session  # type: ignore[attr-defined]
     return server
 
 
