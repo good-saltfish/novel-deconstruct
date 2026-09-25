@@ -28,6 +28,7 @@ from ndecon.creation.models import (
     VolumeOutline,
 )
 from ndecon.creation.providers import FakeCreator
+from ndecon.kb.corpus import search_knowledge
 from ndecon.pipeline.runner import run_analyze
 from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
@@ -259,8 +260,13 @@ def create_handler(store: WorkspaceStore) -> type[BaseHTTPRequestHandler]:
                 return
             creator = FakeCreator()
             stats = _reference_stats(store, project.reference_ids)
+            # L0.5 学习型知识库：工作区已建库时，按书名/题材/设定检索方法论片段（无索引则空）
+            knowledge_query = "\n".join(
+                part for part in (project.meta.title, project.genre, project.premise) if part
+            )
+            knowledge = [snippet.model_dump() for snippet in search_knowledge(store.root, knowledge_query)]
             project.draft = creator.generate_draft(
-                project.meta.title, project.genre, project.premise, stats
+                project.meta.title, project.genre, project.premise, stats, knowledge
             )
             project.confirmed_parts = {}  # 新候选生成后重置确认标记
             store.save_creation(project)

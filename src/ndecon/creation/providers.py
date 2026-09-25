@@ -28,9 +28,14 @@ class Creator(Protocol):
     prompt_version: str
 
     def generate_draft(
-        self, title: str, genre: str, premise: str, reference_stats: list[dict]
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        reference_stats: list[dict],
+        knowledge_snippets: list[dict] | None = None,
     ) -> CreationDraft:
-        """一次产出完整骨架（五个部件）。"""
+        """一次产出完整骨架（五个部件）；knowledge_snippets 为本地知识库方法论片段。"""
         ...
 
 
@@ -66,9 +71,17 @@ class FakeCreator:
     prompt_version = prompts.PROMPT_VERSION
 
     def generate_draft(
-        self, title: str, genre: str, premise: str, reference_stats: list[dict]
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        reference_stats: list[dict],
+        knowledge_snippets: list[dict] | None = None,
     ) -> CreationDraft:
-        """用确定性模板生成五部件；金手指代价为强制字段，模板也必须给出。"""
+        """用确定性模板生成五部件；金手指代价为强制字段，模板也必须给出。
+
+        知识库片段（方法论，已过滤版权原文）确定性地追加一条带来源的卖点提示。
+        """
         genre_name = genre or "都市异能"
         top_themes: list[str] = []
         if reference_stats:
@@ -76,14 +89,24 @@ class FakeCreator:
             top_themes = sorted(stats, key=stats.get, reverse=True)[:2]
         theme_hint = "、".join(top_themes) if top_themes else "成长"
 
+        selling_points = [
+            f"开篇三章即抛出核心冲突（参考高频主题：{theme_hint}）",
+            "金手指带硬代价，强弱节奏可控",
+        ]
+        knowledge_snippets = knowledge_snippets or []
+        if knowledge_snippets:
+            top = knowledge_snippets[0]
+            source = top.get("source", "本地知识库")
+            heading = top.get("heading") or ""
+            method_hint = (top.get("text", "") or "")[:60]
+            label = f"《{heading}》" if heading else method_hint
+            selling_points.append(f"方法论参考（{source}）：{label}——开篇按该手法落地钩子")
+
         positioning = Positioning(
             genre=genre_name,
             audience=f"{genre_name}核心读者，偏好强钩子与明确升级线",
             core_premise=premise or f"《{title}》：普通人被卷入异常世界，靠独门优势破局。",
-            selling_points=[
-                f"开篇三章即抛出核心冲突（参考高频主题：{theme_hint}）",
-                "金手指带硬代价，强弱节奏可控",
-            ],
+            selling_points=selling_points,
             tone_target="紧张为主，爽点章距稳定在 2-3 章",
         )
         volume = VolumeOutline(
@@ -165,14 +188,21 @@ class OpenAICompatCreator:
         self.model_id = f"openai-compat:{provider.model}"
 
     def generate_draft(
-        self, title: str, genre: str, premise: str, reference_stats: list[dict]
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        reference_stats: list[dict],
+        knowledge_snippets: list[dict] | None = None,
     ) -> CreationDraft:
         """请求完整骨架 JSON 并严格校验；非 JSON 或结构缺失按响应/schema 错误处理。"""
         messages = [
             {"role": "system", "content": prompts.SYSTEM_MESSAGE},
             {
                 "role": "user",
-                "content": prompts.full_draft_user_message(title, genre, premise, reference_stats),
+                "content": prompts.full_draft_user_message(
+                    title, genre, premise, reference_stats, knowledge_snippets
+                ),
             },
         ]
         # 同包复用内部 JSON 通道，避免重复造传输栈
