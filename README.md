@@ -76,6 +76,24 @@ L1 检索只索引**本书**已确认的骨架部件（与后续已写章节的�
 正文落盘工作区 `manuscripts/chNNN.md`，分候选/确认两态。
 面板仅监听 127.0.0.1，默认用内置 Fake 离线生成，不产生任何网络请求。
 
+### 使用真实模型（国内 API）
+
+点击面板顶栏**「模型设置」**，选择供应商并填入 API key（可先「测试连接」）：
+
+| 供应商 | 默认模型 | 说明 |
+|---|---|---|
+| DeepSeek | deepseek-chat | platform.deepseek.com 领取 key |
+| 智谱 GLM | glm-4-flash | 有免费模型，bigmodel.cn |
+| 硅基流动 | Qwen/Qwen2.5-7B-Instruct | 小模型有免费额度 |
+| 月之暗面 Kimi | moonshot-v1-8k | platform.moonshot.cn |
+| 通义千问 | qwen-turbo | DashScope 兼容模式 |
+| 本地 Ollama | qwen2.5:7b | 免费离线，无需 key（先 `ollama pull`） |
+| OpenAI / 自定义 | — | 任意 OpenAI 兼容端点 |
+
+key 只保存在**本次面板进程内存**中（不落盘、不进项目文件），重启面板需重新填写。
+保存后可用「AI 生成骨架」与每章卡片上的「生成正文·AI」。命令行方式仍支持
+`NOVEL_DECON_API_KEY` / `OPENAI_BASE_URL` / `NOVEL_DECON_MODEL` 环境变量。
+
 产物：
 
 ```

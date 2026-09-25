@@ -1,7 +1,7 @@
 /* ndecon 面板前端：无框架、无外部 CDN，纯 fetch + DOM */
 "use strict";
 
-const state = { projects: [], currentId: null, references: [] };
+const state = { projects: [], currentId: null, references: [], providers: [], llm: null };
 
 const $ = (sel) => document.querySelector(sel);
 const detail = $("#detail");
@@ -56,6 +56,126 @@ function renderLists() {
     .filter((p) => p.kind === "creation")
     .forEach((p) => creUl.appendChild(renderItem(p)));
 }
+
+/* ---------- 模型供应商设置（#22） ---------- */
+
+async function refreshLlmStatus() {
+  try {
+    const [providers, settings] = await Promise.all([
+      api("GET", "/api/llm/providers"),
+      api("GET", "/api/llm/settings"),
+    ]);
+    state.providers = providers;
+    state.llm = settings;
+    const el = $("#llm-status");
+    if (settings.configured) {
+      el.textContent = `模型：${settings.provider_name} · ${settings.model}`;
+      el.className = "llm-status ok";
+    } else {
+      el.textContent = "模型：未配置（离线 Fake）";
+      el.className = "llm-status";
+    }
+  } catch (err) {
+    // 老版本后端时静默
+  }
+}
+
+$("#btn-llm").onclick = () => {
+  const options = state.providers
+    .map((p) => `<option value="${p.id}">${p.name}</option>`)
+    .join("");
+  openModal(
+    "模型设置（OpenAI 兼容；key 只保存在本次面板进程内存，不落盘）",
+    `<label class="field">供应商
+       <select id="llm-provider">${options}</select></label>
+     <label class="field">API Key <input id="llm-key" type="password" autocomplete="off"
+       placeholder="sk-...（本地 Ollama 可留空；已保存后留空表示不修改）" /></label>
+     <label class="field">模型名 <input id="llm-model" type="text" list="llm-model-list" placeholder="模型 ID" />
+       <datalist id="llm-model-list"></datalist></label>
+     <label class="field">Base URL <input id="llm-base" type="text" placeholder="https://..." /></label>
+     <div id="llm-hint" style="font-size:12px;color:var(--muted)"></div>
+     <button type="button" class="btn small" id="llm-test-btn">测试连接（不保存）</button>
+     <div id="llm-test-result" class="llm-test-result"></div>
+     <div style="font-size:12px;color:var(--muted);margin-top:8px">
+       面板仅监听 127.0.0.1；重启面板后配置清空需重新填写。</div>`,
+    async () => {
+      const provider = $("#llm-provider").value;
+      const payload = {
+        provider,
+        api_key: $("#llm-key").value.trim(),
+        model: $("#llm-model").value.trim(),
+        base_url: $("#llm-base").value.trim(),
+      };
+      // 已保存配置且本次未改 key：后端从会话保留旧 key（需要把当前 provider 先同步过去）
+      await api("PUT", "/api/llm/settings", payload);
+      await refreshLlmStatus();
+      toast("模型配置已保存（仅本次进程）");
+    }
+  );
+
+  // 弹窗打开后填充交互
+  const selectEl = $("#llm-provider");
+  const keyEl = $("#llm-key");
+  const modelEl = $("#llm-model");
+  const baseEl = $("#llm-base");
+  const hintEl = $("#llm-hint");
+  const listEl = $("#llm-model-list");
+
+  const applyPreset = (preserveKey) => {
+    const p = state.providers.find((x) => x.id === selectEl.value);
+    if (!p) return;
+    baseEl.value = p.base_url || "";
+    modelEl.value = p.default_model || modelEl.value || "";
+    listEl.innerHTML = p.models.map((m) => `<option value="${m}">`).join("");
+    hintEl.textContent = p.key_hint || "";
+    baseEl.readOnly = p.id !== "custom";
+    if (!preserveKey) keyEl.value = "";
+    keyEl.placeholder = p.key_optional
+      ? "本地服务可留空"
+      : state.llm?.has_key && state.llm?.provider === p.id
+        ? "已保存（留空保持不变）"
+        : "sk-...";
+  };
+  selectEl.onchange = () => applyPreset(false);
+
+  // 回显当前配置
+  if (state.llm?.provider) {
+    selectEl.value = state.llm.provider;
+    applyPreset(true);
+    modelEl.value = state.llm.model;
+    baseEl.value = state.llm.base_url;
+  } else {
+    applyPreset(true);
+  }
+
+  $("#llm-test-btn").onclick = async () => {
+    const resultEl = $("#llm-test-result");
+    resultEl.className = "llm-test-result";
+    resultEl.textContent = "正在测试…";
+    try {
+      // 测试用当前表单值；key 留空且供应商未变则让后端回退到已保存 key（先 PUT 再空 body 测）
+      const payload = {
+        provider: selectEl.value,
+        api_key: keyEl.value.trim(),
+        model: modelEl.value.trim(),
+        base_url: baseEl.value.trim(),
+      };
+      if (!payload.api_key && state.llm?.has_key && state.llm.provider === selectEl.value
+          && payload.model === state.llm.model && payload.base_url === state.llm.base_url) {
+        const r = await api("POST", "/api/llm/test", {});
+        resultEl.className = "llm-test-result ok";
+        resultEl.textContent = r.detail;
+      } else {
+        const r = await api("POST", "/api/llm/test", payload);
+        resultEl.className = "llm-test-result ok";
+        resultEl.textContent = r.detail;
+      }
+    } catch (err) {
+      resultEl.className = "llm-test-result err";
+      resultEl.textContent = "连接失败：" + err.message;
+    }
+  };
+};
 
 /* ---------- 弹窗表单 ---------- */
 
@@ -215,17 +335,33 @@ function renderCreation(p) {
       </div>
       ${field("一句话设定", "premise", p.premise, true)}
       <button class="btn primary" id="gen">一键生成/重生成骨架（离线 Fake）</button>
-      <span style="color:var(--muted);font-size:12px;margin-left:10px">重生成会把各部件重置为候选态</span>
+      <button class="btn" id="gen-ai">AI 生成骨架（已配置模型）</button>
+      <span style="color:var(--muted);font-size:12px;margin-left:10px">重生成会把各部件重置为候选态；AI 使用顶栏「模型设置」中的供应商</span>
     </div>
     <div id="parts"></div>`;
 
   wrap.querySelector('[data-k="genre"]').onchange = (e) => saveBase(p.meta.id, { genre: e.target.value });
   wrap.querySelector('[data-k="premise"]').onchange = (e) => saveBase(p.meta.id, { premise: e.target.value });
   wrap.querySelector("#gen").onclick = async () => {
-    toast("正在生成骨架…");
-    const updated = await api("POST", `/api/projects/${p.meta.id}/generate`);
+    toast("正在生成骨架（Fake）…");
+    const updated = await api("POST", `/api/projects/${p.meta.id}/generate`, { provider: "fake" });
     renderDetail(updated);
-    toast("骨架已生成");
+    toast("骨架已生成（Fake）");
+  };
+  wrap.querySelector("#gen-ai").onclick = async () => {
+    if (!state.llm?.configured) {
+      toast("请先在顶栏「模型设置」中配置供应商与 key", true);
+      return;
+    }
+    if (!confirm("AI 生成将调用已配置的模型（可能产生 API 费用），并重置各部件为候选态，继续？")) return;
+    toast("正在调用 AI 生成骨架…");
+    try {
+      const updated = await api("POST", `/api/projects/${p.meta.id}/generate`, { provider: "ai" });
+      renderDetail(updated);
+      toast("AI 骨架已生成");
+    } catch (err) {
+      toast(err.message, true);
+    }
   };
 
   const parts = wrap.querySelector("#parts");
@@ -457,4 +593,4 @@ function renderDetail(p) {
   else renderCreation(p);
 }
 
-refresh();
+refreshLlmStatus().then(refresh);
