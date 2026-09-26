@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
@@ -11,6 +11,7 @@
 
 ### Added
 
+- **细纲/设定 Planner Agent：受限工具循环（#25，ADR-0006）**：新增 `ndecon.agent`——模型通过 JSON 动作协议（不绑定厂商 function calling，DeepSeek/智谱/Ollama 通用）在 12 步上限内自主循环调用 8 个白名单工具：只读 5（L0.5 知识库方法论检索、章节细纲、已确认骨架部件、本书 L1 bigram 检索、开放伏笔台账）+ 写候选 2（`draft_beats`/`draft_setting`，物理上无法确认/删除/改正文/联网）+ `finish`；安全机制含近 4 轮只读空转死循环检测（保留已提交候选）、工具错误截断 200 字回喂自愈、全链路 thought/observation trace 审计。FakePlanner 确定性脚本供离线/CI，OpenAICompatPlanner 复用 #23 面板会话；产物 Beat（场景/角色/冲突三角/情绪/埋收钩）与 SettingEntry（势力/配角/地点/规则/道具/力量体系）一律候选态，面板每章「Agent 规划」入口与「结构化设定库」卡片展示候选与轨迹，用户确认后才并入权威数据（beats 挂章按序覆盖、settings 同名同类型去重追加）。新增 16 个测试（共 155 全绿），浏览器端到端实测两条任务闭环通过。
 - **面板内模型供应商选择与 key 配置（#23）**：顶栏「模型设置」弹窗内置 8 家 OpenAI 兼容供应商（DeepSeek/智谱 GLM/硅基流动/月之暗面 Kimi/通义 DashScope/本地 Ollama/OpenAI/自定义），选择后自动填充 base_url 与可选模型；支持「测试连接」（轻量 chat 请求，返回延迟与可读错误，如 401 鉴权失败）；key **只存面板进程内存、不落盘、GET 不回传、重启清空**，同供应商留空保存保留旧 key。骨架生成新增「AI 生成」按钮，章节 AI 生成统一走该会话配置；未配置时明确 400 引导，绝不静默回退。新增 10 个测试（共 139 全绿）。
 - **L0.5 学习型写作知识库（#21，ADR-0005）**：新增 `ndecon.kb`——扫描本地写作资料目录，方法论/教学/素材（md/txt/docx，docx 用 stdlib zipfile 零依赖、GBK 回退）确定性切块建 bigram BM25 索引，落盘工作区 `kb/index.json` + `manifest.json`（逐文件收录/排除原因审计）；版权小说原文多重硬排除（`原文/` 目录、书名-作者命名、前40章/单章/采集缓存、txt >1MB、章节标题启发式），启发式对自研分析类文件名跳过（真实 dogfood 修正误伤）。CLI `ndecon kb index/search`；骨架生成（Fake/openai-compat/面板）自动检索注入带来源的"写作方法论参考"，正文生成不接入；无索引时完全降级。真实资料库实测：收录 254 文件/33142 块、排除 114 文件。新增 22 个测试（共 129 全绿）。
 - 调研报告《RAG 用于长篇写作：开源项目与学术论文全景》（docs/research/2026-09-25-rag-writing-landscape.md）：10 个开源项目（星标/许可证一手核验）+ 12 篇论文详录、横向对比、对 L0–L3 决策的外部验证与缺口建议（写后投影/矛盾检测/L2 技术栈佐证）。
