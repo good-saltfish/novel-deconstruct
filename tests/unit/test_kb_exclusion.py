@@ -100,6 +100,56 @@ def test_chapter_heuristic_below_threshold_kept(tmp_path) -> None:
     assert decision.included
 
 
+def test_markdown_heading_chapters_excluded(tmp_path) -> None:
+    """`## 第N章` markdown 形态的章节体全本必须排除（2026-09 dogfood：斩神 md 漏网）。"""
+    from pathlib import Path
+
+    from ndecon.kb.exclusion import count_chapter_lines
+
+    body = "\n".join(f"## 第{i}章 标题{i}\n他走在街上，天气很热，什么评论术语都没有的叙述。" for i in range(1, 11))
+    assert count_chapter_lines(body) >= 8
+    decision = decide(Path(_file(tmp_path, "某书归档.md", f"# 某书 - 前40章\n{body}")))
+    assert not decision.included and "章节体小说" in decision.reason
+
+
+def test_markdown_chapters_rescued_by_critique_terms(tmp_path) -> None:
+    """章节标题多但评论术语密集的自研详案必须收录（无文件名标记时的内容侧豁免）。"""
+    from pathlib import Path
+
+    lines = ["# 爆款设定详案"]
+    terms = "本章爽点设计：钩子开篇，伏笔埋设，节奏推进，卖点清晰，金手指有限制，追读期待感。"
+    for i in range(1, 9):
+        lines.append(f"## 第{i}章 细纲\n{terms}\n拆解冲突三角，分析人设与题材。")
+    # 文件名刻意不含任何分析标记，专测内容侧术语豁免
+    decision = decide(Path(_file(tmp_path, "门牌号项目.md", "\n".join(lines))))
+    assert decision.included
+
+
+def test_analysis_directory_marker_protects(tmp_path) -> None:
+    """父目录名命中分析标记时，即使文件名无标记且评论术语稀少也收录（拆解/Untitled.md 场景）。"""
+    from pathlib import Path
+
+    body = "\n".join(f"## 第{i}章 计划\n本章主线安排，纯叙述无术语。" for i in range(1, 11))
+    decision = decide(Path(_file(tmp_path, "其它小说/拆解/Untitled.md", f"# 原创大纲\n{body}")))
+    assert decision.included
+
+
+def test_critique_term_boundary(tmp_path) -> None:
+    """评论术语阈值边界：7 次排除、8 次收录（真实语料间隔为 2 vs 11）。"""
+    from pathlib import Path
+
+    from ndecon.kb.exclusion import ANALYSIS_TERM_MIN
+
+    chapters = "\n".join(f"## 第{i}章 标题\n正文叙述。" for i in range(1, 11))
+    seven = f"{chapters}\n爽点 钩子 伏笔 节奏 卖点 追读 毒点"
+    eight = seven + " 期待感"
+    sparse = decide(Path(_file(tmp_path, "低术语.md", seven)))
+    dense = decide(Path(_file(tmp_path, "高术语.md", eight)))
+    assert ANALYSIS_TERM_MIN == 8
+    assert not sparse.included
+    assert dense.included
+
+
 def test_unsupported_type_excluded(tmp_path) -> None:
     """doc/xlsx/zip 等 v1 不支持类型被跳过并给出原因。"""
     from pathlib import Path
