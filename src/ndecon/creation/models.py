@@ -30,6 +30,31 @@ class VolumeOutline(BaseModel):
     ending_hook: str = Field(default="", description="卷尾钩子/升级方向")
 
 
+class Beat(BaseModel):
+    """章节节拍（#25 Planner Agent 产出并经用户确认后挂到细纲章上）。"""
+
+    order: int = Field(ge=1, le=12)
+    scene: str = ""
+    characters: list[str] = Field(default_factory=list)
+    triangle: list[str] = Field(default_factory=list)
+    emotion: str = ""
+    event: str = ""
+    plant_foreshadow: str = ""
+    resolve_foreshadow: str = ""
+
+
+class SettingEntry(BaseModel):
+    """结构化设定库条目（#25）。"""
+
+    entry_type: str = Field(
+        min_length=1, description="world_rule/faction/character/location/item/power_system"
+    )
+    name: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    related_chapters: list[int] = Field(default_factory=list)
+
+
 class ChapterOutline(BaseModel):
     """前 10 章细纲中的单章条目。"""
 
@@ -38,6 +63,7 @@ class ChapterOutline(BaseModel):
     core_event: str = Field(default="", description="本章核心事件")
     opening_hook: str = Field(default="", description="本章开篇钩子")
     ending_hook: str = Field(default="", description="本章章尾钩子")
+    beats: list[Beat] = Field(default_factory=list, description="已确认节拍（#25）")
 
 
 class ProtagonistProfile(BaseModel):

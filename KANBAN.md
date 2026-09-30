@@ -11,7 +11,7 @@
 |---:|---|---|---|---|
 | #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文；**可复用 #21 知识库检索** | type/feature priority/low |
-| #23 | 面板模型供应商选择+key 配置 | 已完成待合入：8 家预置供应商、内存级 key、连通测试、AI 骨架/正文 | 见 PR | type/feature |
+
 
 ## Icebox（不承诺排期，触发条件满足才进 Backlog）
 
@@ -43,3 +43,5 @@
 | #17 | L1 一致性 RAG：bigram BM25 + Recall@10 金标基线 | `ndecon.retrieval`（分词/BM25/索引器/伏笔台账/ContextPack/评测）；参考书类型级拒入、quote 结构性不读；CC0 12 章 16 问金标，Macro Recall@10=0.875 冻结入 CI；`ndecon reindex`；96 测试全绿 | 2026-09-23 |
 | #16 | 章节正文生成与结构化自评 | `creation.chapters`（cw-v0）：Fake 占位 + openai-compat，唯一输入 ContextPack；结构化自评（钩子/密度/偏差）；面板章节生成/编辑/确认闭环；正文落 manuscripts/chNNN.md 候选/确认分层；107 测试全绿 | 2026-09-24 |
 | #9 | 本地 ruff/pre-commit 启用 | pre-commit 4.6.2 安装并 `install`；钩子改 repo: local 调本机 ruff 0.16.8，零 GitHub clone 断网可用；`run --all-files` 通过；CONTRIBUTING 同步 | 2026-09-24 |
+| #23 | 面板模型供应商选择+key 配置 | `ndecon.llm`：8 家预置 OpenAI 兼容供应商；key 仅进程内存不落盘不回传；连通测试（真机验证 DeepSeek 401 分类）；AI 骨架/正文走会话；139 测试 | 2026-09-25 |
+| #25 | 细纲/设定 Planner Agent：受限工具循环 | `ndecon.agent`：8 工具白名单（5只读/2写候选/1终止）+ JSON 动作协议 + 12 步上限 + 死循环检测 + trace 审计；Fake/OpenAI 双轨；Beat/SettingEntry 候选确认制（面板章节入口+设定库卡片）；ADR-0006；155 测试全绿，浏览器端到端实测通过 | 2026-09-27 |

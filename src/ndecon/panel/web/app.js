@@ -446,7 +446,11 @@ function renderCreation(p) {
         inner.innerHTML = `<h5>第${c.order}章 · <input data-k="title" type="text" value="${c.title}" style="width:60%"/></h5>
           ${field("核心事件", "core_event", c.core_event, true)}
           ${field("开篇钩子", "opening_hook", c.opening_hook)}
-          ${field("章尾钩子", "ending_hook", c.ending_hook)}`;
+          ${field("章尾钩子", "ending_hook", c.ending_hook)}
+          <div class="beat-slot"></div>`;
+        attachChapterPlanner(
+          inner.querySelector(".beat-slot"), p.meta.id, c.order, c.beats || []
+        );
         attachManuscript(inner, p.meta.id, c.order, (p.manuscripts || {})[`ch${c.order}`]);
         return inner;
       });
@@ -463,6 +467,9 @@ function renderCreation(p) {
     card.querySelector(".card-body").appendChild(grid);
     parts.appendChild(card);
   }
+
+  // 结构化设定库（#25 Planner Agent 候选经确认后入库）
+  parts.appendChild(buildSettingsCard(p));
 
   // 修正卷纲卡片的收集作用域（闭包内 parts 过宽）
   const volumeCard = [...parts.querySelectorAll(".card")].find((c) =>
@@ -586,6 +593,245 @@ function attachManuscript(card, projectId, order, record) {
 
   card.appendChild(bar);
   card.appendChild(panel);
+}
+
+/* ---------- Planner Agent（#25） ---------- */
+
+/** 生成一行「标签：值」，值走 textContent 防注入。 */
+function kvRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "kv-row";
+  const k = document.createElement("span");
+  k.className = "kv-k";
+  k.textContent = label;
+  const v = document.createElement("span");
+  v.className = "kv-v";
+  v.textContent = value;
+  row.appendChild(k);
+  row.appendChild(v);
+  return row;
+}
+
+/** 渲染单个节拍候选/已确认节拍。 */
+function beatItemEl(b) {
+  const el = document.createElement("div");
+  el.className = "cand-item";
+  const head = document.createElement("div");
+  head.className = "cand-head";
+  head.textContent = `节拍 ${b.order} · ${b.scene || "（场景待补）"}`;
+  el.appendChild(head);
+  const rows = [
+    ["事件", b.event],
+    ["情绪", b.emotion],
+    ["人物", (b.characters || []).join("、")],
+    ["冲突三角", (b.triangle || []).join("、")],
+    ["埋钩", b.plant_foreshadow],
+    ["收钩", b.resolve_foreshadow],
+  ];
+  rows.filter(([, v]) => v).forEach(([k, v]) => el.appendChild(kvRow(k, v)));
+  return el;
+}
+
+/** 渲染单条结构化设定。 */
+function settingItemEl(s) {
+  const el = document.createElement("div");
+  el.className = "cand-item";
+  const head = document.createElement("div");
+  head.className = "cand-head";
+  head.textContent = `【${s.entry_type}】${s.name}`;
+  el.appendChild(head);
+  el.appendChild(kvRow("内容", s.content));
+  if ((s.tags || []).length) el.appendChild(kvRow("标签", s.tags.join("、")));
+  if ((s.related_chapters || []).length) {
+    el.appendChild(kvRow("关联章", "第 " + s.related_chapters.join("、") + " 章"));
+  }
+  return el;
+}
+
+/** 渲染可折叠的 agent 运行轨迹（供用户审计每一步思考与工具观察）。 */
+function traceEl(trace) {
+  const det = document.createElement("details");
+  det.className = "agent-trace";
+  const sum = document.createElement("summary");
+  sum.textContent = `运行轨迹（${trace.length} 步，点击展开审计）`;
+  det.appendChild(sum);
+  trace.forEach((st) => {
+    const row = document.createElement("div");
+    row.className = "trace-step" + (st.ok ? "" : " trace-err");
+    const head = document.createElement("div");
+    head.textContent = `#${st.turn} ${st.tool}｜${st.thought}`;
+    row.appendChild(head);
+    const obs = document.createElement("div");
+    obs.className = "trace-obs";
+    obs.textContent = st.observation;
+    row.appendChild(obs);
+    det.appendChild(row);
+  });
+  return det;
+}
+
+/** 渲染一次 run 的结果面板：状态、候选、轨迹、确认按钮。 */
+function renderRunPanel(panel, result, candidates, itemRenderer, onAccept, acceptLabel) {
+  panel.innerHTML = "";
+  const status = document.createElement("div");
+  status.className = "run-status" + (result.finished ? "" : " warn");
+  status.textContent = result.finished
+    ? `✓ 正常结束 · 共 ${result.turns_used} 步`
+    : `⚠ 提前停止（${result.stop_reason}）· 共 ${result.turns_used} 步`;
+  panel.appendChild(status);
+  if (result.summary) {
+    const sum = document.createElement("div");
+    sum.className = "run-summary";
+    sum.textContent = result.summary;
+    panel.appendChild(sum);
+  }
+  const listTitle = document.createElement("div");
+  listTitle.className = "agent-section-title";
+  listTitle.textContent = `候选（${candidates.length}）——确认前不会改动细纲/设定`;
+  panel.appendChild(listTitle);
+  if (!candidates.length) {
+    const empty = document.createElement("div");
+    empty.className = "run-empty";
+    empty.textContent = "本次运行没有提交候选，可展开轨迹查看原因。";
+    panel.appendChild(empty);
+  }
+  candidates.forEach((c) => panel.appendChild(itemRenderer(c)));
+  panel.appendChild(traceEl(result.trace));
+  if (candidates.length) {
+    const accept = document.createElement("button");
+    accept.className = "btn small primary agent-accept";
+    accept.textContent = acceptLabel;
+    accept.onclick = () => onAccept();
+    panel.appendChild(accept);
+  }
+}
+
+/** 生成 Fake/AI 两个运行按钮；AI 需已配置模型并二次确认费用。 */
+function plannerButtons(onRun) {
+  const bar = document.createElement("div");
+  bar.className = "agent-bar";
+  const fake = document.createElement("button");
+  fake.className = "btn small primary";
+  fake.textContent = "Agent 规划 · Fake";
+  fake.onclick = () => onRun("fake");
+  const ai = document.createElement("button");
+  ai.className = "btn small";
+  ai.textContent = "Agent 规划 · AI";
+  ai.onclick = async () => {
+    if (!state.llm?.configured) {
+      toast("请先在顶栏「模型设置」中配置供应商与 key", true);
+      return;
+    }
+    if (!confirm("将调用已配置模型运行规划 agent（最多 12 步，可能产生 API 费用），继续？")) return;
+    await onRun("ai");
+  };
+  bar.appendChild(fake);
+  bar.appendChild(ai);
+  return bar;
+}
+
+/** 通用：调用 agent run 接口并把结果填入面板；失败就地展示不抛异常。 */
+async function executeAgentRun(panel, projectId, payload, candidatesOf, itemRenderer,
+  acceptPath, acceptPayload, acceptLabel, okToast) {
+  panel.style.display = "block";
+  panel.innerHTML = "";
+  const waiting = document.createElement("div");
+  waiting.className = "muted-small";
+  waiting.textContent = "正在运行规划 agent（最多 12 步）…";
+  panel.appendChild(waiting);
+  let result;
+  try {
+    result = await api("POST", `/api/projects/${projectId}/agent/runs`, payload);
+  } catch (err) {
+    panel.innerHTML = "";
+    const e = document.createElement("div");
+    e.className = "run-status warn";
+    e.textContent = "运行失败：" + err.message;
+    panel.appendChild(e);
+    toast(err.message, true);
+    return;
+  }
+  const candidates = candidatesOf(result);
+  renderRunPanel(
+    panel, result, candidates, itemRenderer,
+    async () => {
+      try {
+        const updated = await api("PUT", acceptPath, acceptPayload(result));
+        renderDetail(updated);
+        toast(okToast);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    },
+    acceptLabel(candidates.length),
+  );
+}
+
+/** 把节拍规划区挂进单章细纲卡：已确认节拍只读展示 + 运行按钮 + 候选面板。 */
+function attachChapterPlanner(slot, projectId, order, confirmedBeats) {
+  if (confirmedBeats.length) {
+    const title = document.createElement("div");
+    title.className = "agent-section-title";
+    title.textContent = `已确认节拍（${confirmedBeats.length}）`;
+    slot.appendChild(title);
+    confirmedBeats.forEach((b) => slot.appendChild(beatItemEl(b)));
+  }
+  const panel = document.createElement("div");
+  panel.className = "agent-panel";
+  panel.style.display = "none";
+  slot.appendChild(plannerButtons((provider) =>
+    executeAgentRun(
+      panel, projectId,
+      { task: "expand_chapter", chapter_order: order, provider },
+      (r) => r.drafts.beats, beatItemEl,
+      `/api/projects/${projectId}/agent/accept/beats`,
+      (r) => ({ chapter_order: order, beats: r.drafts.beats }),
+      (n) => `确认 ${n} 个节拍并入第 ${order} 章（覆盖本章旧节拍）`,
+      `第 ${order} 章节拍已确认入库`,
+    )));
+  slot.appendChild(panel);
+}
+
+/** 构建结构化设定库卡片：已确认条目 + 补设定 agent 入口。 */
+function buildSettingsCard(p) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const head = document.createElement("h4");
+  const title = document.createElement("span");
+  title.textContent = "结构化设定库";
+  const badge = document.createElement("span");
+  badge.className = "badge" + (p.settings.length ? " ok" : "");
+  badge.textContent = p.settings.length ? `${p.settings.length} 条已确认` : "空";
+  head.appendChild(title);
+  head.appendChild(badge);
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "card-body";
+  if (p.settings.length) {
+    p.settings.forEach((s) => body.appendChild(settingItemEl(s)));
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "muted-small";
+    empty.textContent = "还没有设定。可运行规划 agent 补充势力 / 配角 / 地点 / 规则 / 道具 / 力量体系。";
+    body.appendChild(empty);
+  }
+  const panel = document.createElement("div");
+  panel.className = "agent-panel";
+  panel.style.display = "none";
+  body.appendChild(plannerButtons((provider) =>
+    executeAgentRun(
+      panel, p.meta.id,
+      { task: "add_settings", provider },
+      (r) => r.drafts.settings, settingItemEl,
+      `/api/projects/${p.meta.id}/agent/accept/settings`,
+      (r) => ({ settings: r.drafts.settings }),
+      (n) => `确认 ${n} 条设定并入设定库（同名同类型去重）`,
+      "设定已确认入库",
+    )));
+  body.appendChild(panel);
+  card.appendChild(body);
+  return card;
 }
 
 function renderDetail(p) {

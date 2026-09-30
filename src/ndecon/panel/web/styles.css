@@ -145,3 +145,38 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .ms-review { font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; line-height: 1.8; }
 .ms-review ul { margin: 4px 0 0; padding-left: 18px; }
 .ms-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* Planner Agent 规划区（#25） */
+.agent-bar { display: flex; gap: 6px; margin: 8px 0 4px; }
+.agent-panel { display: none; margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.agent-section-title { font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+.muted-small { font-size: 12px; color: var(--muted); }
+.cand-item {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 9px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.cand-head { color: var(--accent); font-weight: 600; margin-bottom: 2px; }
+.kv-row { display: flex; gap: 6px; line-height: 1.7; }
+.kv-k { color: var(--muted); flex-shrink: 0; }
+.kv-v { color: var(--text); word-break: break-word; }
+.run-status { font-size: 12px; color: var(--accent-2); margin-bottom: 4px; }
+.run-status.warn { color: var(--accent); }
+.run-summary { font-size: 12px; color: var(--muted); margin-bottom: 6px; line-height: 1.6; }
+.run-empty { font-size: 12px; color: var(--danger); margin-bottom: 6px; }
+.agent-trace { font-size: 12px; margin: 6px 0; }
+.agent-trace summary { color: var(--muted); cursor: pointer; }
+.trace-step {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  margin-top: 5px;
+  line-height: 1.6;
+}
+.trace-step.trace-err { border-color: var(--danger); }
+.trace-obs { color: var(--muted); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+.agent-accept { margin-top: 8px; }
