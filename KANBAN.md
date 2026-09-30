@@ -45,3 +45,4 @@
 | #9 | 本地 ruff/pre-commit 启用 | pre-commit 4.6.2 安装并 `install`；钩子改 repo: local 调本机 ruff 0.16.8，零 GitHub clone 断网可用；`run --all-files` 通过；CONTRIBUTING 同步 | 2026-09-24 |
 | #23 | 面板模型供应商选择+key 配置 | `ndecon.llm`：8 家预置 OpenAI 兼容供应商；key 仅进程内存不落盘不回传；连通测试（真机验证 DeepSeek 401 分类）；AI 骨架/正文走会话；139 测试 | 2026-09-25 |
 | #25 | 细纲/设定 Planner Agent：受限工具循环 | `ndecon.agent`：8 工具白名单（5只读/2写候选/1终止）+ JSON 动作协议 + 12 步上限 + 死循环检测 + trace 审计；Fake/OpenAI 双轨；Beat/SettingEntry 候选确认制（面板章节入口+设定库卡片）；ADR-0006；155 测试全绿，浏览器端到端实测通过 | 2026-09-27 |
+| #27 | 知识库版权闸门封堵 markdown 章节形态全本 | `## 第N章` md 全本旧规则零命中漏网（斩神前40章 3195 块）；三重判据（md 标题正则+父目录标记豁免+评论术语≥8 内容豁免，阈值实测 2 vs 11）；真实库仅 1 文件翻转零误伤，290 文件/34639 块；159 测试全绿 | 2026-09-30 |
