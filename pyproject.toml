@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "novel-deconstruct"
-version = "0.1.0"
+version = "0.2.0"
 description = "本地优先的中文网文拆书 CLI：文本 -> 章节切分 -> 结构化拆书产物（Markdown + JSONL），证据可追溯，模型可插拔"
 readme = "README.md"
 requires-python = ">=3.10"
