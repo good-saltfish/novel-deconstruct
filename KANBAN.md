@@ -9,7 +9,7 @@
 
 | # | 标题 | 用户故事（一句话） | 关键验收 | 标签 |
 |---:|---|---|---|---|
-| #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.1.0 | 作为使用者，我要 pip install novel-deconstruct | 需账号持有者在 PyPI 配 OIDC publisher；打 v0.1.0 tag；验证 pip 安装。工程侧已就绪（见 #8） | type/chore priority/high |
+| #14 | 首次发布：配置 PyPI trusted publisher 并发布 v0.2.0 | 作为使用者，我要 pip install novel-deconstruct | **工程侧 100% 就绪**（定稿 commit 4915377，159 测试/构建/venv 冒烟全过，tag 未打）；待账号持有者配 PyPI pending publisher（5 字段操作清单见 #14 评论），配好打 v0.2.0 tag 即自动发布 | type/chore priority/high |
 | #4 | Stage 4 设定与角色档案 | 作为使用者，我想自动汇总世界观/金手指/角色（含功能定位） | 同名不自动合并；别名归一带置信度；硬事实可 grep 回原文；**可复用 #21 知识库检索** | type/feature priority/low |
 
 
