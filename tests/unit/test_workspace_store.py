@@ -176,6 +176,34 @@ def test_delete_removes_manuscript_subdir(tmp_path) -> None:
     assert not (tmp_path / "projects" / "creation-ms-2").exists()
 
 
+def test_legacy_inline_summaries_are_migrated(tmp_path) -> None:
+    """旧布局（摘要塞在 project.json 里）读一次就自动搬到 summaries/，不静默丢摘要。"""
+    from ndecon.domain.models import ChapterSummary
+
+    store = WorkspaceStore(tmp_path)
+    store.save_creation(CreationProject(meta=_meta(store, "creation-legacy-1", "creation", "旧布局")))
+    project = store.get("creation-legacy-1")
+    summary = ChapterSummary(
+        chapter_id="CH0001",
+        order=1,
+        title="旧章",
+        gist="旧布局里的摘要",
+        model_id="rule:test",
+        prompt_version="cs-v0",
+        plot_points=[],
+    )
+    # 直接写回带旧字段的 project.json，模拟升级前的工作区
+    payload = project.model_dump()
+    payload["summaries"] = {"ch1": summary.model_dump()}
+    store._atomic_write_json(store._path_for("creation-legacy-1"), payload)  # noqa: SLF001
+
+    migrated = store.get("creation-legacy-1")
+    assert migrated.summaries == {}
+    assert store.read_summary("creation-legacy-1", 1)["gist"] == "旧布局里的摘要"
+    # 迁移后重读仍是空的，说明只搬一次、不会反复重写
+    assert store.get("creation-legacy-1").summaries == {}
+
+
 def test_project_artifact_filename_whitelist(tmp_path) -> None:
     """项目内 JSON 产物只接受安全文件名，拒绝目录穿越与可执行后缀。"""
     store = WorkspaceStore(tmp_path)
