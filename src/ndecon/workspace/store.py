@@ -15,6 +15,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from ndecon.retrieval.bm25 import BM25Index
 from ndecon.workspace.models import (
     CreationProject,
     ProjectMeta,
@@ -114,6 +115,28 @@ class WorkspaceStore:
         path = self._project_dir(project_id) / filename
         self._atomic_write_json(path, payload)
         return path
+
+    def load_project_index(self, project_id: str) -> BM25Index | None:
+        """读取 reindex 落盘的章节检索索引（index.json）；不存在时返回 None。
+
+        t3 缺陷 #2 修复：reindex 此前只写不读（死写）。本方法让运行时能真正消费
+        该索引；CLI 仍保持"显式按需重建"语义（不引入常驻向量/索引服务）。
+        """
+        import json
+
+        from ndecon.retrieval.bm25 import BM25Index
+
+        path = self._project_dir(project_id) / "index.json"
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            return BM25Index.from_dict(data)
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def _manuscript_path(self, project_id: str, order: int) -> Path:
         """返回某章正文文件路径；章号由调用方限定 1-10，文件名服务端生成防穿越。"""

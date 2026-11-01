@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from collections import Counter
 
+from ndecon.kb.corpus import render_kb_block
+
 PROMPT_VERSION = "cr-v0"
 
 SYSTEM_MESSAGE = """你是一名资深中文网络小说主编。
@@ -83,21 +85,6 @@ def _outline_spec() -> dict:
     }
 
 
-def knowledge_brief(snippets: list[dict]) -> str:
-    """把本地知识库命中片段渲染为带来源的方法论参考区块；空列表返回空串。
-
-    片段由 ndecon.kb 检索产生（只含方法论/教学/素材，版权小说原文在入库时已排除）。
-    """
-    if not snippets:
-        return ""
-    lines = ["【写作方法论参考】（来自作者本地知识库；借鉴手法与结构，严禁照抄具体作品情节）："]
-    for i, snippet in enumerate(snippets, start=1):
-        heading = snippet.get("heading") or ""
-        title_part = f"《{heading}》 " if heading else ""
-        lines.append(f"{i}. 来源 {snippet.get('source', '?')} {title_part}\n   {snippet.get('text', '')}")
-    return "\n".join(lines)
-
-
 def full_draft_user_message(
     title: str,
     genre: str,
@@ -111,7 +98,7 @@ def full_draft_user_message(
         f"一句话设定：{premise}\n",
         f"参考拆书统计（仅数字手感，禁止照抄情节）：\n{learning_brief(reference_stats)}",
     ]
-    knowledge = knowledge_brief(knowledge_snippets or [])
+    knowledge = render_kb_block(knowledge_snippets or [])
     if knowledge:
         sections.append(knowledge)
     sections.append(

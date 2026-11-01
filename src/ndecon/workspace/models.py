@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ndecon.creation.models import CreationDraft, ManuscriptRecord, SettingEntry
-from ndecon.domain.models import Aggregation
+from ndecon.domain.models import Aggregation, ChapterSummary
 
 ProjectKind = Literal["reference", "creation"]
 
@@ -46,7 +46,11 @@ class CreationProject(BaseModel):
     draft: CreationDraft = Field(default_factory=CreationDraft)
     # 部件确认状态：part_name -> True 表示用户已确认当前内容
     confirmed_parts: dict[str, bool] = Field(default_factory=dict)
-    # 已确认的结构化设定库（#25 Planner Agent 候选经确认后进入）
-    settings: list[SettingEntry] = Field(default_factory=list)
     # 已写章节：键为 "ch<order>"，正文 Markdown 另存 manuscripts/chNNN.md
     manuscripts: dict[str, ManuscriptRecord] = Field(default_factory=dict)
+    # 已落盘的章节结构化摘要：键为 "ch<order>"，供检索索引注入已写章节内容
+    # （t3 缺陷 #3 修复）。仅存结构化摘要，绝不含小说原文/成句
+    # （摘要文本由 plot_points.summary 拼装，SourceRef.quote 永不进入索引）。
+    summaries: dict[str, ChapterSummary] = Field(default_factory=dict)
+    # Planner Agent 提交的设定候选；经 accept 接口确认后落库（候选不代笔）
+    settings: list[SettingEntry] = Field(default_factory=list, description="Agent 提交的设定候选")

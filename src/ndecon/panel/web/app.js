@@ -446,11 +446,7 @@ function renderCreation(p) {
         inner.innerHTML = `<h5>第${c.order}章 · <input data-k="title" type="text" value="${c.title}" style="width:60%"/></h5>
           ${field("核心事件", "core_event", c.core_event, true)}
           ${field("开篇钩子", "opening_hook", c.opening_hook)}
-          ${field("章尾钩子", "ending_hook", c.ending_hook)}
-          <div class="beat-slot"></div>`;
-        attachChapterPlanner(
-          inner.querySelector(".beat-slot"), p.meta.id, c.order, c.beats || []
-        );
+          ${field("章尾钩子", "ending_hook", c.ending_hook)}`;
         attachManuscript(inner, p.meta.id, c.order, (p.manuscripts || {})[`ch${c.order}`]);
         return inner;
       });
@@ -468,8 +464,11 @@ function renderCreation(p) {
     parts.appendChild(card);
   }
 
-  // 结构化设定库（#25 Planner Agent 候选经确认后入库）
-  parts.appendChild(buildSettingsCard(p));
+  // Planner Agent 自动规划卡片（#25）：运行产出候选，手动确认才入库
+  parts.appendChild(buildAgentCard(p));
+
+  // 设定候选 / 细纲候选：两套提示词学习方法不同（creation/plans.py）
+  parts.appendChild(buildPlanCard(p));
 
   // 修正卷纲卡片的收集作用域（闭包内 parts 过宽）
   const volumeCard = [...parts.querySelectorAll(".card")].find((c) =>
@@ -591,252 +590,288 @@ function attachManuscript(card, projectId, order, record) {
     }
   };
 
+  mkBtn("指纹体检", "small", async () => {
+    if (panel.style.display === "none") await openPanel();
+    try {
+      const rep = await api("GET", `/api/projects/${projectId}/chapters/${order}/lint`);
+      renderLint(panel, rep);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
   card.appendChild(bar);
   card.appendChild(panel);
 }
 
-/* ---------- Planner Agent（#25） ---------- */
+/* ---------- AI 指纹体检：只读报告，不给改写文本 ---------- */
 
-/** 生成一行「标签：值」，值走 textContent 防注入。 */
-function kvRow(label, value) {
-  const row = document.createElement("div");
-  row.className = "kv-row";
-  const k = document.createElement("span");
-  k.className = "kv-k";
-  k.textContent = label;
-  const v = document.createElement("span");
-  v.className = "kv-v";
-  v.textContent = value;
-  row.appendChild(k);
-  row.appendChild(v);
-  return row;
-}
-
-/** 渲染单个节拍候选/已确认节拍。 */
-function beatItemEl(b) {
-  const el = document.createElement("div");
-  el.className = "cand-item";
-  const head = document.createElement("div");
-  head.className = "cand-head";
-  head.textContent = `节拍 ${b.order} · ${b.scene || "（场景待补）"}`;
-  el.appendChild(head);
-  const rows = [
-    ["事件", b.event],
-    ["情绪", b.emotion],
-    ["人物", (b.characters || []).join("、")],
-    ["冲突三角", (b.triangle || []).join("、")],
-    ["埋钩", b.plant_foreshadow],
-    ["收钩", b.resolve_foreshadow],
-  ];
-  rows.filter(([, v]) => v).forEach(([k, v]) => el.appendChild(kvRow(k, v)));
-  return el;
-}
-
-/** 渲染单条结构化设定。 */
-function settingItemEl(s) {
-  const el = document.createElement("div");
-  el.className = "cand-item";
-  const head = document.createElement("div");
-  head.className = "cand-head";
-  head.textContent = `【${s.entry_type}】${s.name}`;
-  el.appendChild(head);
-  el.appendChild(kvRow("内容", s.content));
-  if ((s.tags || []).length) el.appendChild(kvRow("标签", s.tags.join("、")));
-  if ((s.related_chapters || []).length) {
-    el.appendChild(kvRow("关联章", "第 " + s.related_chapters.join("、") + " 章"));
+function renderLint(panel, rep) {
+  let box = panel.querySelector(".ms-lint");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "ms-lint";
+    panel.insertBefore(box, panel.querySelector(".ms-content"));
   }
-  return el;
-}
-
-/** 渲染可折叠的 agent 运行轨迹（供用户审计每一步思考与工具观察）。 */
-function traceEl(trace) {
-  const det = document.createElement("details");
-  det.className = "agent-trace";
-  const sum = document.createElement("summary");
-  sum.textContent = `运行轨迹（${trace.length} 步，点击展开审计）`;
-  det.appendChild(sum);
-  trace.forEach((st) => {
-    const row = document.createElement("div");
-    row.className = "trace-step" + (st.ok ? "" : " trace-err");
-    const head = document.createElement("div");
-    head.textContent = `#${st.turn} ${st.tool}｜${st.thought}`;
-    row.appendChild(head);
-    const obs = document.createElement("div");
-    obs.className = "trace-obs";
-    obs.textContent = st.observation;
-    row.appendChild(obs);
-    det.appendChild(row);
-  });
-  return det;
-}
-
-/** 渲染一次 run 的结果面板：状态、候选、轨迹、确认按钮。 */
-function renderRunPanel(panel, result, candidates, itemRenderer, onAccept, acceptLabel) {
-  panel.innerHTML = "";
-  const status = document.createElement("div");
-  status.className = "run-status" + (result.finished ? "" : " warn");
-  status.textContent = result.finished
-    ? `✓ 正常结束 · 共 ${result.turns_used} 步`
-    : `⚠ 提前停止（${result.stop_reason}）· 共 ${result.turns_used} 步`;
-  panel.appendChild(status);
-  if (result.summary) {
-    const sum = document.createElement("div");
-    sum.className = "run-summary";
-    sum.textContent = result.summary;
-    panel.appendChild(sum);
-  }
-  const listTitle = document.createElement("div");
-  listTitle.className = "agent-section-title";
-  listTitle.textContent = `候选（${candidates.length}）——确认前不会改动细纲/设定`;
-  panel.appendChild(listTitle);
-  if (!candidates.length) {
-    const empty = document.createElement("div");
-    empty.className = "run-empty";
-    empty.textContent = "本次运行没有提交候选，可展开轨迹查看原因。";
-    panel.appendChild(empty);
-  }
-  candidates.forEach((c) => panel.appendChild(itemRenderer(c)));
-  panel.appendChild(traceEl(result.trace));
-  if (candidates.length) {
-    const accept = document.createElement("button");
-    accept.className = "btn small primary agent-accept";
-    accept.textContent = acceptLabel;
-    accept.onclick = () => onAccept();
-    panel.appendChild(accept);
-  }
-}
-
-/** 生成 Fake/AI 两个运行按钮；AI 需已配置模型并二次确认费用。 */
-function plannerButtons(onRun) {
-  const bar = document.createElement("div");
-  bar.className = "agent-bar";
-  const fake = document.createElement("button");
-  fake.className = "btn small primary";
-  fake.textContent = "Agent 规划 · Fake";
-  fake.onclick = () => onRun("fake");
-  const ai = document.createElement("button");
-  ai.className = "btn small";
-  ai.textContent = "Agent 规划 · AI";
-  ai.onclick = async () => {
-    if (!state.llm?.configured) {
-      toast("请先在顶栏「模型设置」中配置供应商与 key", true);
-      return;
-    }
-    if (!confirm("将调用已配置模型运行规划 agent（最多 12 步，可能产生 API 费用），继续？")) return;
-    await onRun("ai");
-  };
-  bar.appendChild(fake);
-  bar.appendChild(ai);
-  return bar;
-}
-
-/** 通用：调用 agent run 接口并把结果填入面板；失败就地展示不抛异常。 */
-async function executeAgentRun(panel, projectId, payload, candidatesOf, itemRenderer,
-  acceptPath, acceptPayload, acceptLabel, okToast) {
-  panel.style.display = "block";
-  panel.innerHTML = "";
-  const waiting = document.createElement("div");
-  waiting.className = "muted-small";
-  waiting.textContent = "正在运行规划 agent（最多 12 步）…";
-  panel.appendChild(waiting);
-  let result;
-  try {
-    result = await api("POST", `/api/projects/${projectId}/agent/runs`, payload);
-  } catch (err) {
-    panel.innerHTML = "";
-    const e = document.createElement("div");
-    e.className = "run-status warn";
-    e.textContent = "运行失败：" + err.message;
-    panel.appendChild(e);
-    toast(err.message, true);
-    return;
-  }
-  const candidates = candidatesOf(result);
-  renderRunPanel(
-    panel, result, candidates, itemRenderer,
-    async () => {
-      try {
-        const updated = await api("PUT", acceptPath, acceptPayload(result));
-        renderDetail(updated);
-        toast(okToast);
-      } catch (err) {
-        toast(err.message, true);
-      }
-    },
-    acceptLabel(candidates.length),
-  );
-}
-
-/** 把节拍规划区挂进单章细纲卡：已确认节拍只读展示 + 运行按钮 + 候选面板。 */
-function attachChapterPlanner(slot, projectId, order, confirmedBeats) {
-  if (confirmedBeats.length) {
-    const title = document.createElement("div");
-    title.className = "agent-section-title";
-    title.textContent = `已确认节拍（${confirmedBeats.length}）`;
-    slot.appendChild(title);
-    confirmedBeats.forEach((b) => slot.appendChild(beatItemEl(b)));
-  }
-  const panel = document.createElement("div");
-  panel.className = "agent-panel";
-  panel.style.display = "none";
-  slot.appendChild(plannerButtons((provider) =>
-    executeAgentRun(
-      panel, projectId,
-      { task: "expand_chapter", chapter_order: order, provider },
-      (r) => r.drafts.beats, beatItemEl,
-      `/api/projects/${projectId}/agent/accept/beats`,
-      (r) => ({ chapter_order: order, beats: r.drafts.beats }),
-      (n) => `确认 ${n} 个节拍并入第 ${order} 章（覆盖本章旧节拍）`,
-      `第 ${order} 章节拍已确认入库`,
-    )));
-  slot.appendChild(panel);
-}
-
-/** 构建结构化设定库卡片：已确认条目 + 补设定 agent 入口。 */
-function buildSettingsCard(p) {
-  const card = document.createElement("div");
-  card.className = "card";
-  const head = document.createElement("h4");
-  const title = document.createElement("span");
-  title.textContent = "结构化设定库";
-  const badge = document.createElement("span");
-  badge.className = "badge" + (p.settings.length ? " ok" : "");
-  badge.textContent = p.settings.length ? `${p.settings.length} 条已确认` : "空";
-  head.appendChild(title);
-  head.appendChild(badge);
-  card.appendChild(head);
-
-  const body = document.createElement("div");
-  body.className = "card-body";
-  if (p.settings.length) {
-    p.settings.forEach((s) => body.appendChild(settingItemEl(s)));
-  } else {
-    const empty = document.createElement("div");
-    empty.className = "muted-small";
-    empty.textContent = "还没有设定。可运行规划 agent 补充势力 / 配角 / 地点 / 规则 / 道具 / 力量体系。";
-    body.appendChild(empty);
-  }
-  const panel = document.createElement("div");
-  panel.className = "agent-panel";
-  panel.style.display = "none";
-  body.appendChild(plannerButtons((provider) =>
-    executeAgentRun(
-      panel, p.meta.id,
-      { task: "add_settings", provider },
-      (r) => r.drafts.settings, settingItemEl,
-      `/api/projects/${p.meta.id}/agent/accept/settings`,
-      (r) => ({ settings: r.drafts.settings }),
-      (n) => `确认 ${n} 条设定并入设定库（同名同类型去重）`,
-      "设定已确认入库",
-    )));
-  body.appendChild(panel);
-  card.appendChild(body);
-  return card;
+  const rows = rep.findings.map((f) => {
+    const ok = f.severity === "info" ? "info" : (f.passed ? "ok" : "bad");
+    return `<tr class="lint-${ok}">
+      <td>${esc(f.label)}</td>
+      <td>${f.value}</td>
+      <td>${f.limit}</td>
+      <td>${esc(f.detail || "")}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<div class="lint-head">
+      <b>AI 指纹体检</b>（${esc(rep.version)}）
+      ${rep.passed ? '<span class="badge ok">全部在阈值内</span>'
+        : '<span class="badge draft">有项超出阈值</span>'}
+      <span class="muted">字数 ${rep.cjk_chars} · 段落 ${rep.paragraph_count} · 场景轮换 ${rep.scene_rotations}</span>
+    </div>
+    <table class="lint-table">
+      <thead><tr><th>规则</th><th>实测</th><th>阈值</th><th>说明</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="muted">只报告密度信号，不判定"是不是 AI"，也不提供改写文本——改哪里由你决定。</div>`;
 }
 
 function renderDetail(p) {
   if (p.meta.kind === "reference") renderReference(p);
   else renderCreation(p);
+}
+
+/* ---------- Planner Agent（#25）：运行候选 + 手动确认入库 ---------- */
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function buildAgentCard(p) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const orderOpts = Array.from({ length: 10 }, (_, i) =>
+    `<option value="${i + 1}">第${i + 1}章</option>`).join("");
+  card.innerHTML = `
+    <h4>Planner Agent 自动规划（#25）</h4>
+    <div class="card-body">
+      <div class="muted" style="margin-bottom:10px">
+        候选不代笔：运行后产出节拍/设定「候选」，需手动确认才入库（确认前不改权威数据）。AI 使用顶栏「模型设置」中的供应商。</div>
+      <label class="field">任务
+        <select id="agent-task">
+          <option value="expand_chapter">扩写某章节拍</option>
+          <option value="add_settings">补充结构化设定</option>
+        </select></label>
+      <label class="field" id="agent-ch-wrap">章号（1-10）
+        <select id="agent-order">${orderOpts}</select></label>
+      <label class="field">模型
+        <select id="agent-provider">
+          <option value="fake">离线 Fake（免 key）</option>
+          <option value="ai">已配置模型（顶栏「模型设置」）</option>
+        </select></label>
+      <button class="btn primary small" id="agent-run">运行 Agent</button>
+      <div id="agent-out" style="margin-top:12px"></div>
+    </div>`;
+
+  const taskSel = card.querySelector("#agent-task");
+  const orderWrap = card.querySelector("#agent-ch-wrap");
+  const out = card.querySelector("#agent-out");
+
+  const syncTask = () => {
+    orderWrap.style.display = taskSel.value === "expand_chapter" ? "" : "none";
+  };
+  taskSel.onchange = syncTask;
+  syncTask();
+
+  card.querySelector("#agent-run").onclick = async () => {
+    const task = taskSel.value;
+    const provider = card.querySelector("#agent-provider").value;
+    const payload = { task, provider };
+    if (task === "expand_chapter") {
+      payload.chapter_order = Number(card.querySelector("#agent-order").value);
+    }
+    out.innerHTML = '<div class="muted">运行中…</div>';
+    try {
+      const r = await api("POST", `/api/projects/${p.meta.id}/agent/runs`, payload);
+      renderAgentResult(card, p, r, task);
+      toast(r.finished ? "Agent 运行完成" : `Agent 停止：${r.stop_reason}`);
+    } catch (err) {
+      out.innerHTML = "";
+      toast(err.message, true);
+    }
+  };
+  return card;
+}
+
+function renderAgentResult(card, p, r, task) {
+  const out = card.querySelector("#agent-out");
+  const beats = r.drafts?.beats || [];
+  const settings = r.drafts?.settings || [];
+  let html = `<div class="muted">stop=${esc(r.stop_reason)} · turns=${r.turns_used}` +
+    (r.total_latency_ms != null ? ` · ${r.total_latency_ms.toFixed(1)}ms` : "") + `</div>`;
+  if (task === "expand_chapter") {
+    html += `<h5 style="margin:10px 0 6px">节拍候选（${beats.length}）</h5>`;
+    html += beats.map((b) =>
+      `<div class="agent-beat">第${b.order}拍 · ${esc(b.scene)}｜${esc((b.characters || []).join("、"))}｜${esc(b.event)}</div>`
+    ).join("");
+    html += `<button class="btn small primary" id="agent-accept-beats">确认这 ${beats.length} 个节拍</button>`;
+  } else {
+    html += `<h5 style="margin:10px 0 6px">设定候选（${settings.length}）</h5>`;
+    html += settings.map((s) =>
+      `<div class="agent-setting">[${esc(s.entry_type)}] ${esc(s.name)}：${esc(s.content)}</div>`
+    ).join("");
+    html += `<button class="btn small primary" id="agent-accept-settings">确认这 ${settings.length} 条设定</button>`;
+  }
+  html += `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">查看运行轨迹（${r.trace.length} 步）</summary>` +
+    `<div class="agent-trace">` +
+    r.trace.map((t) => `<div>[${t.turn}] ${esc(t.tool)}：${esc(t.thought)} → ${esc(t.observation)}</div>`).join("") +
+    `</div></details>`;
+  out.innerHTML = html;
+
+  const acceptBeats = out.querySelector("#agent-accept-beats");
+  if (acceptBeats) acceptBeats.onclick = async () => {
+    try {
+      await api("PUT", `/api/projects/${p.meta.id}/agent/accept/beats`,
+        { chapter_order: Number(card.querySelector("#agent-order").value), beats });
+      toast("节拍已确认为该章权威内容");
+      refresh();
+    } catch (err) { toast(err.message, true); }
+  };
+  const acceptSettings = out.querySelector("#agent-accept-settings");
+  if (acceptSettings) acceptSettings.onclick = async () => {
+    try {
+      await api("PUT", `/api/projects/${p.meta.id}/agent/accept/settings`, { settings });
+      toast("设定已确认为项目设定");
+      refresh();
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+/* ---------- 设定候选 / 细纲候选（两套学习方法不同，见 creation/plans.py）---------- */
+
+function buildPlanCard(p) {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <h4>设定候选 / 细纲候选</h4>
+    <div class="card-body">
+      <div class="muted" style="margin-bottom:10px">
+        两套提示词的学习方法不同：<b>设定</b>走收敛（边界→代价→人），<b>细纲</b>走铺开（时间轴排张力），
+        各自用不同的检索词去知识库里取经。产出是候选，确认后才写进项目。</div>
+      <div class="plan-tabs">
+        <button class="btn small primary" id="pt-settings">设定候选</button>
+        <button class="btn small" id="pt-outline">细纲候选</button>
+      </div>
+      <div class="muted" id="pt-hint" style="margin:8px 0"></div>
+      <label class="field">模型
+        <select id="pt-provider">
+          <option value="fake">离线 Fake（免 key）</option>
+          <option value="ai">已配置模型（顶栏「模型设置」）</option>
+        </select></label>
+      <button class="btn primary small" id="pt-run">生成当前卡片候选</button>
+      <div id="pt-out" style="margin-top:12px"></div>
+    </div>`;
+
+  const out = card.querySelector("#pt-out");
+  const hint = card.querySelector("#pt-hint");
+  const btnS = card.querySelector("#pt-settings");
+  const btnO = card.querySelector("#pt-outline");
+  let kind = "settings";
+
+  const HINTS = {
+    settings: "收敛式：每条设定必须回答「它限制什么 / 代价是什么」，会让主角变轻松的条目请删掉。",
+    outline: "铺开式：按章排张力；已确认设定是硬约束，不得越界引入新能力/势力/规则。确认细纲需要项目已有 10 章骨架。",
+  };
+  const syncTab = () => {
+    btnS.className = "btn small" + (kind === "settings" ? " primary" : "");
+    btnO.className = "btn small" + (kind === "outline" ? " primary" : "");
+    hint.textContent = HINTS[kind];
+    out.innerHTML = "";
+  };
+  btnS.onclick = () => { kind = "settings"; syncTab(); };
+  btnO.onclick = () => { kind = "outline"; syncTab(); };
+  syncTab();
+
+  card.querySelector("#pt-run").onclick = async () => {
+    out.innerHTML = '<div class="muted">生成中…</div>';
+    try {
+      const provider = card.querySelector("#pt-provider").value;
+      const r = await api("POST", `/api/projects/${p.meta.id}/plan/${kind}`, { provider });
+      renderPlanResult(card, p, r, kind);
+      toast(`候选已生成（${r.plan.model_id}）`);
+    } catch (err) {
+      out.innerHTML = "";
+      toast(err.message, true);
+    }
+  };
+  return card;
+}
+
+function renderPlanResult(card, p, r, kind) {
+  const out = card.querySelector("#pt-out");
+  const plan = r.plan || {};
+  const snip = r.knowledge || [];
+  let html = `<div class="muted">来源 ${esc(plan.model_id)} · ${esc(plan.prompt_version)}
+     · 知识库命中 ${snip.length} 条</div>`;
+
+  if (kind === "settings") {
+    const entries = plan.entries || [];
+    html += `<h5 style="margin:10px 0 6px">设定候选（${entries.length}）</h5>`;
+    html += entries.map((s) =>
+      `<div class="agent-setting"><b>[${esc(s.entry_type)}] ${esc(s.name)}</b>：${esc(s.content)}</div>`
+    ).join("");
+    const g = plan.golden_finger;
+    if (g) {
+      html += `<div class="agent-setting"><b>金手指 · ${esc(g.name)}</b>（${esc(g.form)}）：${esc(g.ability)}
+        <div class="muted">代价/限制：${esc(g.cost_limitation)}</div>
+        <div class="muted">成长：${esc(g.growth_path)}</div></div>`;
+    }
+    html += `<button class="btn small primary" id="pt-accept-settings">确认写入项目设定</button>`;
+  } else {
+    const chapters = plan.chapters || [];
+    html += `<h5 style="margin:10px 0 6px">细纲候选（${chapters.length} 章）</h5>`;
+    chapters.forEach((c) => {
+      const beats = c.beats || [];
+      html += `<div class="plan-chapter"><b>第${c.order}章</b>
+        <span class="muted">情绪走向 ${esc(c.emotion_track)}</span>`;
+      html += beats.map((b) =>
+        `<div class="agent-beat">第${b.order}拍 · ${esc(b.scene)}｜${esc((b.characters || []).join("、"))}｜${esc(b.event)}</div>`
+      ).join("");
+      html += `</div>`;
+    });
+    html += `<div class="muted" style="margin:8px 0">确认会<b>整章替换</b>对应章节拍（其余章节拍不动）。</div>`;
+    html += `<button class="btn small primary" id="pt-accept-outline">确认写入这 ${chapters.length} 章节拍</button>`;
+  }
+
+  if ((plan.notes || []).length) {
+    html += `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">产出方自我说明</summary>
+      <div class="agent-trace">${plan.notes.map((n) => `<div>${esc(n)}</div>`).join("")}</div></details>`;
+  }
+  if (snip.length) {
+    html += `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer">参考了知识库哪些片段（${snip.length}）</summary>
+      <div class="agent-trace">${snip.map((s) =>
+        `<div>《${esc(s.source)}》${esc(s.heading)}：${esc(s.text)}</div>`).join("")}</div></details>`;
+  }
+  out.innerHTML = html;
+
+  const btnS = out.querySelector("#pt-accept-settings");
+  if (btnS) btnS.onclick = async () => {
+    try {
+      await api("PUT", `/api/projects/${p.meta.id}/plan/accept/settings`, {
+        entries: plan.entries, golden_finger: plan.golden_finger,
+      });
+      toast("设定候选已确认为项目设定");
+      refresh();
+    } catch (err) { toast(err.message, true); }
+  };
+  const btnO = out.querySelector("#pt-accept-outline");
+  if (btnO) btnO.onclick = async () => {
+    try {
+      await api("PUT", `/api/projects/${p.meta.id}/plan/accept/outline`, { chapters: plan.chapters });
+      toast("细纲候选已确认为各章节拍");
+      refresh();
+    } catch (err) { toast(err.message, true); }
+  };
 }
 
 refreshLlmStatus().then(refresh);

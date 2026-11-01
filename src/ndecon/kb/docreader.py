@@ -4,6 +4,8 @@
 - .docx：用 stdlib zipfile 读 word/document.xml，按段落还原纯文本，剥除标签；
 - 切块：优先在 markdown 标题或空行处断开，逐块累积到目标长度；
   超长块做硬切并保留少量重叠，防止章节体长文成为一个过大的检索单元。
+  标题独占的段落不单独成块：标题已作为块的 heading/title 参与打分，留空块只会
+  让它凭标题词挤掉真正有内容的邻近块。
 切块纯函数、顺序固定，同一文件永远得到同样的块序列。
 """
 
@@ -84,14 +86,20 @@ def chunk_text(text: str) -> list[TextChunk]:
     blocks: list[tuple[str, str]] = []  # (块文本, 最近的 markdown 标题)
     buffer: list[str] = []
     current_heading = ""
+    # 刚消费掉的标题行原文：用于识别"标题独占一块"的空块
+    pending_heading = ""
 
     def flush() -> None:
-        """把缓冲区累积的行存为一个候选块（空缓冲跳过）。"""
-        nonlocal buffer
+        """把缓冲区累积的行存为一个候选块（空缓冲或标题空块跳过）。"""
+        nonlocal buffer, pending_heading
         joined = "\n".join(part for part in buffer if part)
-        if joined.strip():
+        stripped = joined.strip()
+        # 标题独占一块时不产出检索块：标题词已作为块的 heading/title 元数据参与打分，
+        # 留一个空块只会让它凭标题词挤掉真正有内容的邻近块（实测 17.9% 的块只有标题）。
+        if stripped and stripped != pending_heading.strip():
             blocks.append((joined, current_heading))
         buffer = []
+        pending_heading = ""
 
     for line in lines:
         if not line:
@@ -100,6 +108,7 @@ def chunk_text(text: str) -> list[TextChunk]:
         if _MD_HEADING_RE.match(line):
             flush()
             current_heading = line.lstrip("#").strip()
+            pending_heading = line
         buffer.append(line)
         # 累积已超长时提前成块
         if sum(len(x) + 1 for x in buffer) >= TARGET_CHUNK_CHARS:

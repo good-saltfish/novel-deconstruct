@@ -133,6 +133,62 @@ def test_bad_json_is_fed_back_not_crashing(tmp_path) -> None:
     assert "合法 JSON" in result.trace[0].observation
 
 
+def test_parse_action_recovers_json_wrapped_in_prose(tmp_path) -> None:
+    """ARQs 鲁棒：JSON 被废话/围栏包裹仍能解析（真实 LLM 常见，roadmap 盲区）。"""
+    from ndecon.agent.runner import _parse_action
+
+    act = json.dumps({"thought": "t", "tool": "finish", "args": {"summary": "s"}},
+                     ensure_ascii=False)
+    cases = [
+        act,                                          # 纯 JSON
+        f"```json\n{act}\n```",                       # markdown 围栏
+        f"好的，这是动作：{act} 希望有帮助",            # 前后废话
+        f"{act} 补充说明 {{备注}} 文字",               # 尾部废话夹花括号（贪婪正则曾误吞）
+        f"分析如下 {{不是json}} 然后 {act}",           # 前导垃圾花括号 + 真正 JSON
+    ]
+    for text in cases:
+        action, err = _parse_action(text)
+        assert err is None and action is not None and action.tool == "finish", text
+
+
+def test_tool_result_structured_error_fields() -> None:
+    """AgentGuide 可读错误：未知工具不可重试、参数错可重试且带纠正 hint。"""
+    from ndecon.agent.models import AgentDrafts
+    from ndecon.agent.tools import ToolContext
+
+    store = WorkspaceStore(__import__("pathlib").Path.cwd())
+    ctx = ToolContext(project=_project(store), task="add_settings", chapter_order=None,
+                      workspace=__import__("pathlib").Path.cwd(), drafts=AgentDrafts())
+
+    unknown = execute_tool("rm_rf", {}, ctx)
+    assert unknown.ok is False and unknown.retryable is False
+    assert unknown.hint and "工具名" in unknown.hint
+    # 兼容两段解包
+    ok, output = unknown
+    assert ok is False and "未知工具" in output
+
+    bad_args = execute_tool("get_outline", {"order": "bad"}, ctx)
+    assert bad_args.ok is False and bad_args.retryable is True
+    assert bad_args.hint and "schema" in bad_args.hint
+
+    good = execute_tool("get_outline", {"order": 1}, ctx)
+    assert good.ok is True and good.hint is None and good.retryable is False
+
+
+def test_latency_tracked_on_real_model_path(tmp_path) -> None:
+    """真实（非离线）模型路径：逐步 latency_ms 与 total_latency_ms 被记录。"""
+    store = WorkspaceStore(tmp_path)
+    llm = _ScriptedLLM([
+        json.dumps({"thought": "结束", "tool": "finish", "args": {"summary": "ok"}},
+                   ensure_ascii=False),
+    ])
+    assert not getattr(llm, "offline", False)  # _ScriptedLLM 非离线 → 计时开启
+    result = run_planner(llm=llm, project=_project(store), task="add_settings", workspace=tmp_path,
+                         max_turns=3)
+    assert result.total_latency_ms is not None and result.total_latency_ms >= 0
+    assert all(step.latency_ms is not None for step in result.trace)
+
+
 def test_unknown_tool_and_bad_args_returned_as_observations(tmp_path) -> None:
     """未知工具/参数非法返回失败观察（不中断），模型看到后改路 finish。"""
     store = WorkspaceStore(tmp_path)
@@ -224,6 +280,36 @@ def test_draft_setting_merges_same_name(tmp_path) -> None:
     ok, _ = execute_tool("draft_setting", {"entry": entry}, ctx)
     assert ok is True
     assert len(drafts.settings) == 1 and drafts.settings[0].content == "v2"
+
+
+def test_methodology_snippet_flattened_to_one_line(tmp_path) -> None:
+    """多行方法论片段被压平为一行并保留来源前缀，且标题空块有显式说明。
+
+    实测（修 KB 切块前）：知识库 35659 块里 6382 块正文等于标题，agent 花一步工具
+    调用只拿回一个章节标题——这两个断言锁住"不再空转"的行为：
+    ①多行内容必须落在同一行（否则第二行起失去"- 来源"前缀，模型误读成多条记录）；
+    ②正文等于标题时必须明说无正文，而不是把标题再抄一遍。
+    """
+    from ndecon.agent.tools import ToolContext, _flatten_snippet
+
+    multiline = "**三角1: 有人拦车**\n- 迫害者: 拦车的人\n- 受害者: 王扬\n- 关键句: \"有人拦了王扬的车。\""
+    flat = _flatten_snippet(multiline, "三角配置")
+    assert "\n" not in flat
+    assert "迫害者" in flat and "有人拦了王扬的车" in flat
+
+    assert _flatten_snippet("### 冲突三角", "冲突三角") == "（该片段仅有章节标题，无正文）"
+    assert _flatten_snippet("", "任意") == "（该片段无正文）"
+    assert _flatten_snippet("字" * 500).endswith("…") and len(_flatten_snippet("字" * 500)) == 301
+    # 每片段一行：前缀与正文之间不得出现换行
+    store = WorkspaceStore(tmp_path)
+    from ndecon.agent.models import AgentDrafts
+
+    ctx = ToolContext(project=_project(store), task="expand_chapter", chapter_order=2,
+                      workspace=tmp_path, drafts=AgentDrafts())
+    ok, output = execute_tool("search_methodology", {"query": "冲突三角"}, ctx)
+    assert ok is True
+    for line in output.splitlines():
+        assert line.startswith("- 来源 ") or line.startswith("知识库无命中")
 
 
 def test_expand_chapter_requires_order() -> None:

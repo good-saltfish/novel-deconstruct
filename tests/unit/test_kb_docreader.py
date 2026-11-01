@@ -55,6 +55,20 @@ def test_chunk_by_headings_and_blank_lines() -> None:
     assert chunks[0].index == 0 and chunks[1].index == 1
 
 
+def test_heading_only_block_not_emitted() -> None:
+    """标题后紧跟空行时不产出"只有标题"的空块，内容留在下一块且仍带该标题。
+
+    实测：35659 块的知识库里 6382 块（17.9%）text 等于标题本身；这些空块凭标题词
+    参与打分，把真正有内容的邻近块挤出 top-k。
+    """
+    text = "### 冲突三角\n\n- [ ] 识别至少 3-7 个三角\n\n### 七个冲突三角\n\n三角清单在此。"
+    chunks = chunk_text(text)
+    assert len(chunks) == 2
+    assert all(c.text.strip().lstrip("# ").strip() != c.heading for c in chunks)
+    assert chunks[0].heading == "冲突三角" and "识别至少" in chunks[0].text
+    assert chunks[1].heading == "七个冲突三角" and "三角清单" in chunks[1].text
+
+
 def test_chunk_deterministic_and_ordered() -> None:
     """同一文本切块结果逐字段一致且序号连续。"""
     text = "\n".join(f"## 小节{i}\n内容{i} " * 3 for i in range(20))

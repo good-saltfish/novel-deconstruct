@@ -187,13 +187,33 @@ def search_knowledge(
     return snippets
 
 
-def knowledge_brief(snippets: list[dict]) -> str:
-    """把命中片段（dict 形态）渲染成骨架 prompt 的"写作方法论参考"区块文本（带来源标注）。"""
+def render_kb_block(snippets: list[dict], heading: str | None = None) -> str:
+    """把命中片段渲染成给模型的"方法论参考"块（全项目唯一实现）。
+
+    返回空字符串表示未命中（模型必须如实知道自己没参考知识库）；
+    KB 只经手方法论与结构手法，绝不含任何小说原文/成句。
+
+    统一口径（t3 缺陷 #4/#5 修复）：
+    - 标题句：方括号前缀 + "（来自作者本地知识库，借鉴手法与结构，严禁照抄具体作品情节）"；
+    - 每条：序号. 来源 <source> 《<heading>》\n   文本，文本统一截断到 KB_SNIPPET_CHARS(400)；
+    - Agent 侧原先 300 字截断与"禁止照抄"尾句一并收敛到同一份实现。
+    """
     if not snippets:
         return ""
-    lines = ["【写作方法论参考】（来自作者本地知识库，借鉴手法与结构，严禁照抄具体作品情节）："]
+    if heading:
+        lines = [f"{heading}（来自作者本地知识库，借鉴手法与结构，严禁照抄具体作品情节）："]
+    else:
+        lines = ["【写作方法论参考】（来自作者本地知识库，借鉴手法与结构，严禁照抄具体作品情节）："]
     for i, snippet in enumerate(snippets, start=1):
-        heading = snippet.get("heading") or ""
-        title = f"《{heading}》" if heading else ""
-        lines.append(f"{i}. 来源 {snippet.get('source', '?')} {title}\n   {snippet.get('text', '')}")
+        heading_ = snippet.get("heading") or ""
+        title = f"《{heading_}》" if heading_ else ""
+        text = snippet.get("text", "")
+        if len(text) > KB_SNIPPET_CHARS:
+            text = text[:KB_SNIPPET_CHARS] + "…"
+        lines.append(f"{i}. 来源 {snippet.get('source', '?')} {title}\n   {text}")
     return "\n".join(lines)
+
+
+def knowledge_brief(snippets: list[dict]) -> str:
+    """给正文生成器的"方法论参考"块（委托 render_kb_block，单一事实来源）。"""
+    return render_kb_block(snippets)

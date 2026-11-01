@@ -20,9 +20,11 @@ from pydantic import ValidationError
 
 from ndecon.agent.planners import FakePlanner, OpenAICompatPlanner
 from ndecon.agent.runner import run_planner
+from ndecon.creation import plans as creation_plans
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.models import (
     Beat,
+    ChapterBeatPlan,
     ChapterOutline,
     GoldenFingerSpec,
     ManuscriptRecord,
@@ -31,7 +33,15 @@ from ndecon.creation.models import (
     SettingEntry,
     VolumeOutline,
 )
+from ndecon.creation.plan_providers import (
+    FakeOutlinePlanner,
+    FakeSettingPlanner,
+    OpenAICompatOutlinePlanner,
+    OpenAICompatSettingPlanner,
+    PlanError,
+)
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
+from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload
 from ndecon.llm.session import (
@@ -43,6 +53,8 @@ from ndecon.llm.session import (
 from ndecon.pipeline.runner import run_analyze
 from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
+from ndecon.providers.openai_compat import OpenAICompatProvider
+from ndecon.quality.fingerprint import scan_chapter
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import (
     CreationProject,
@@ -50,6 +62,9 @@ from ndecon.workspace.models import (
     ReferenceProject,
 )
 from ndecon.workspace.store import WorkspaceStore, new_project_id
+
+# Planner Agent 合法任务（契约测试据此给出可读报错）
+_VALID_AGENT_TASKS = ("expand_chapter", "add_settings")
 
 # 各部件到模型的映射；PUT 保存时按此做结构校验
 _PART_MODELS = {
@@ -140,7 +155,9 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 return
             if path.startswith("/api/projects/"):
                 parts = path.strip("/").split("/")
-                if len(parts) == 5 and parts[3] == "chapters":
+                if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "lint":
+                    self._lint_chapter(parts[2], parts[4])
+                elif len(parts) == 5 and parts[3] == "chapters":
                     self._get_chapter(parts[2], parts[4])
                 else:
                     self._get_project(path.split("/")[3])
@@ -168,9 +185,6 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 self._create_project(payload)
             elif path == "/api/llm/test":
                 self._test_llm(payload)
-            elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
-                parts = path.strip("/").split("/")
-                self._start_agent_run(parts[2], payload)
             elif chapter_post:
                 if parts[5] == "generate":
                     self._generate_chapter(parts[2], parts[4], payload)
@@ -178,6 +192,12 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                     self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/generate"):
                 self._generate(path.split("/")[3], payload)
+            elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
+                self._run_agent(path.split("/")[3], payload)
+            elif path.startswith("/api/projects/") and path.endswith("/plan/settings"):
+                self._plan_settings(path.split("/")[3], payload)
+            elif path.startswith("/api/projects/") and path.endswith("/plan/outline"):
+                self._plan_outline(path.split("/")[3], payload)
             else:
                 self._error(404, "未知接口")
 
@@ -200,19 +220,27 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             # /api/projects/{id}/chapters/{order}
             elif len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "chapters":
                 self._save_chapter(parts[2], parts[4])
+            # /api/projects/{id}/agent/accept/{beats,settings}
+            elif len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "agent" and parts[4] == "accept":
+                if parts[5] == "beats":
+                    self._accept_beats(parts[2])
+                elif parts[5] == "settings":
+                    self._accept_settings(parts[2])
+                else:
+                    self._error(404, "未知接口")
+            # /api/projects/{id}/plan/accept/{settings,outline}
             elif (
                 len(parts) == 6
                 and parts[:2] == ["api", "projects"]
-                and parts[3] == "agent"
+                and parts[3] == "plan"
                 and parts[4] == "accept"
             ):
-                # /api/projects/{id}/agent/accept/{kind}  kind=beats|settings
-                try:
-                    payload = self._read_json()
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    self._error(400, "请求体不是合法 JSON")
-                    return
-                self._accept_agent_drafts(parts[2], parts[5], payload)
+                if parts[5] == "settings":
+                    self._accept_plan_settings(parts[2])
+                elif parts[5] == "outline":
+                    self._accept_plan_outline(parts[2])
+                else:
+                    self._error(404, "未知接口")
             else:
                 self._error(404, "未知接口")
 
@@ -365,6 +393,305 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             store.save_creation(project)
             self._send_json(200, project.model_dump())
 
+        # ---- Planner Agent（#25）：跑自主循环 / 确认候选入库 ----
+
+        def _run_agent(self, project_id: str, payload: dict) -> None:
+            """运行一次 Planner Agent：provider=fake（离线）或 ai（面板已配 LLM）。
+
+            未配置的 ai 直接 400 引导，绝不静默降级 Fake（冻结红线）。
+            """
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可运行 Agent")
+                return
+            task = str(payload.get("task", "")).strip()
+            if task not in _VALID_AGENT_TASKS:
+                self._error(400, f"非法任务：{task!r}（可选 expand_chapter / add_settings）")
+                return
+            chapter_order = payload.get("chapter_order")
+            if task == "expand_chapter":
+                if chapter_order is None:
+                    self._error(400, "expand_chapter 必须提供 chapter_order")
+                    return
+                try:
+                    chapter_order = int(chapter_order)
+                except (TypeError, ValueError):
+                    self._error(400, f"chapter_order 必须是整数：{chapter_order!r}")
+                    return
+                if not 1 <= chapter_order <= 10:
+                    self._error(400, "仅支持第 1-10 章")
+                    return
+            else:
+                chapter_order = None
+            provider = str(payload.get("provider", "fake")).strip()
+            use_ai = provider in ("ai", "openai-compat")
+            try:
+                planner = (
+                    OpenAICompatPlanner(llm_session.require_provider())
+                    if use_ai
+                    else FakePlanner(task, chapter_order)
+                )
+            except ProviderError as exc:
+                self._error(400, str(exc))
+                return
+            result = run_planner(
+                llm=planner,
+                project=project,
+                task=task,  # type: ignore[arg-type]
+                workspace=store.root,
+                chapter_order=chapter_order,
+            )
+            self._send_json(200, result.model_dump())
+
+        def _accept_beats(self, project_id: str) -> None:
+            """把 Agent 提交的节拍候选确认为某章权威内容（候选不代笔，由用户触发）。"""
+            try:
+                payload = self._read_json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, "请求体不是合法 JSON")
+                return
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可确认节拍")
+                return
+            raw_beats = payload.get("beats")
+            if not isinstance(raw_beats, list) or not raw_beats:
+                self._error(422, "beats 必须为非空列表")
+                return
+            try:
+                beats = [Beat.model_validate(b) for b in raw_beats]
+            except (ValidationError, TypeError, ValueError) as exc:
+                self._error(422, f"节拍结构不合法：{exc}")
+                return
+            try:
+                order = int(payload["chapter_order"])
+            except (KeyError, TypeError, ValueError):
+                self._error(400, "chapter_order 必填且为整数")
+                return
+            chapter = next((c for c in project.draft.chapters if c.order == order), None)
+            if chapter is None:
+                self._error(400, "请先生成并保存包含该章的细纲")
+                return
+            # 按 order 排序，保证展示与重放确定性（原始 #25 语义）
+            chapter.beats = sorted(beats, key=lambda b: b.order)
+            store.save_creation(project)
+            self._send_json(200, project.model_dump())
+
+        def _accept_settings(self, project_id: str) -> None:
+            """把 Agent 提交的设定候选确认为项目设定（候选不代笔，由用户触发）。
+
+            同名同类型去重后追加（设定是累积库，保留历史条目；不整体覆盖以免丢失既有设定）。
+            """
+            try:
+                payload = self._read_json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, "请求体不是合法 JSON")
+                return
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可确认设定")
+                return
+            raw_settings = payload.get("settings")
+            if not isinstance(raw_settings, list) or not raw_settings:
+                self._error(422, "settings 必须为非空列表")
+                return
+            try:
+                entries = [SettingEntry.model_validate(s) for s in raw_settings]
+            except (ValidationError, TypeError, ValueError) as exc:
+                self._error(422, f"设定结构不合法：{exc}")
+                return
+            # 追加 + 同名同类型去重（原 #25 累积语义）
+            existing = {(s.entry_type, s.name) for s in project.settings}
+            for entry in entries:
+                if (entry.entry_type, entry.name) not in existing:
+                    project.settings.append(entry)
+                    existing.add((entry.entry_type, entry.name))
+            store.save_creation(project)
+            self._send_json(200, project.model_dump())
+
+        # ---- 设定 / 细纲两套候选（学习方法不同，见 creation/plans.py 对照表）----
+
+        def _plan_settings(self, project_id: str, payload: dict) -> None:
+            """生成设定候选：返回候选本身，不写项目（候选不代笔，确认另走 accept）。"""
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可生成设定")
+                return
+            use_ai = str(payload.get("provider", "fake")).strip() in ("ai", "openai-compat")
+            try:
+                planner = (
+                    OpenAICompatSettingPlanner(llm_session.require_provider())
+                    if use_ai
+                    else FakeSettingPlanner()
+                )
+            except ProviderError as exc:
+                # 冻结红线：未配置 AI 必须报错，不静默降级 Fake
+                self._error(400, str(exc))
+                return
+            # 检索词瞄准"怎么写设定"，不是书名/情节——否则会回报情节梗概
+            snippets = [
+                snippet.model_dump()
+                for snippet in search_knowledge(store.root, creation_plans.SETTING_KB_QUERY)
+            ]
+            try:
+                plan = planner.plan_settings(
+                    project.meta.title, project.genre, project.premise, snippets
+                )
+            except PlanError as exc:
+                self._error(502, str(exc))
+                return
+            self._send_json(200, {"plan": plan.model_dump(), "knowledge": snippets})
+
+        def _plan_outline(self, project_id: str, payload: dict) -> None:
+            """生成细纲候选：已确认设定作为硬约束传入，防止细纲引入设定外的能力。"""
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可生成细纲")
+                return
+            use_ai = str(payload.get("provider", "fake")).strip() in ("ai", "openai-compat")
+            try:
+                planner = (
+                    OpenAICompatOutlinePlanner(llm_session.require_provider())
+                    if use_ai
+                    else FakeOutlinePlanner()
+                )
+            except ProviderError as exc:
+                self._error(400, str(exc))
+                return
+            snippets = [
+                snippet.model_dump()
+                for snippet in search_knowledge(store.root, creation_plans.OUTLINE_KB_QUERY)
+            ]
+            confirmed = [entry.model_dump() for entry in project.settings]
+            finger = None
+            if project.draft is not None and project.draft.golden_finger is not None:
+                finger = project.draft.golden_finger.model_dump()
+            try:
+                plan = planner.plan_outline(
+                    project.meta.title,
+                    project.genre,
+                    project.premise,
+                    confirmed,
+                    snippets,
+                    golden_finger=finger,
+                )
+            except PlanError as exc:
+                self._error(502, str(exc))
+                return
+            self._send_json(200, {"plan": plan.model_dump(), "knowledge": snippets})
+
+        def _accept_plan_settings(self, project_id: str) -> None:
+            """确认「设定候选」整体（含金手指）写回项目（候选不代笔，由用户触发）。
+
+            与 `_accept_settings` 的区别：那条只吃 SettingEntry 列表并**累积追加**；
+            这条接受 `_plan_settings` 的完整候选，除设定条目外还接管金手指。
+            """
+            try:
+                payload = self._read_json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, "请求体不是合法 JSON")
+                return
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可确认设定")
+                return
+            raw_entries = payload.get("entries")
+            if not isinstance(raw_entries, list) or not raw_entries:
+                self._error(422, "entries 必须为非空列表")
+                return
+            try:
+                entries = [SettingEntry.model_validate(item) for item in raw_entries]
+            except (ValidationError, TypeError, ValueError) as exc:
+                self._error(422, f"设定结构不合法：{exc}")
+                return
+            # 设定是累积库：同名同类型不覆盖（与该项既有的 accept 语义保持一致）
+            existing = {(entry.entry_type, entry.name) for entry in project.settings}
+            for entry in entries:
+                if (entry.entry_type, entry.name) not in existing:
+                    project.settings.append(entry)
+                    existing.add((entry.entry_type, entry.name))
+
+            # 金手指可选：只在候选里带了才写，避免把已有金手指清空
+            raw_finger = payload.get("golden_finger")
+            if raw_finger:
+                try:
+                    project.draft.golden_finger = GoldenFingerSpec.model_validate(raw_finger)
+                except (ValidationError, TypeError, ValueError) as exc:
+                    self._error(422, f"金手指结构不合法：{exc}")
+                    return
+                project.draft.provenance["golden_finger"] = "user-confirmed"
+                project.confirmed_parts["golden_finger"] = True
+
+            store.save_creation(project)
+            self._send_json(200, project.model_dump())
+
+        def _accept_plan_outline(self, project_id: str) -> None:
+            """确认「细纲候选」：把每章节拍挂到对应 ChapterOutline.beats 上。
+
+            逐章**替换**该章节拍（一次细纲候选是一份完整提案，不是增量）；
+            候选里没提到的章保持原样，不做整体清空。
+            """
+            try:
+                payload = self._read_json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._error(400, "请求体不是合法 JSON")
+                return
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可确认细纲")
+                return
+            raw_chapters = payload.get("chapters")
+            if not isinstance(raw_chapters, list) or not raw_chapters:
+                self._error(422, "chapters 必须为非空列表")
+                return
+            if len(raw_chapters) > 10:
+                self._error(422, "细纲候选一次最多 10 章")
+                return
+            plans: list[ChapterBeatPlan] = []
+            for item in raw_chapters:
+                try:
+                    plans.append(ChapterBeatPlan.model_validate(item))
+                except (ValidationError, TypeError, ValueError) as exc:
+                    self._error(422, f"细纲结构不合法：{exc}")
+                    return
+            for plan in plans:
+                target = next((c for c in project.draft.chapters if c.order == plan.order), None)
+                if target is None:
+                    self._error(400, f"候选含第 {plan.order} 章，但项目细纲里没有这一章（请先生成骨架）")
+                    return
+                # 整章替换 + 按拍号排序保证重放确定性
+                target.beats = sorted(plan.beats, key=lambda b: b.order)
+            store.save_creation(project)
+            self._send_json(200, project.model_dump())
+
         def _update_base(self, project_id: str) -> None:
             """更新创作项目基础设定：只允许 genre/premise/reference_ids 三个字段。"""
             try:
@@ -424,91 +751,6 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             store.save_creation(project)
             self._send_json(200, project.model_dump())
 
-        # ---- Planner Agent（#25）----
-
-        def _start_agent_run(self, project_id: str, payload: dict) -> None:
-            """运行细纲/设定规划 agent（同步返回 trace 与候选；provider=fake|ai）。"""
-            try:
-                project = store.get(project_id)
-            except KeyError:
-                self._error(404, "项目不存在")
-                return
-            if not isinstance(project, CreationProject):
-                self._error(400, "只有创作项目可以运行规划 agent")
-                return
-
-            task = str(payload.get("task", "")).strip()
-            if task not in ("expand_chapter", "add_settings"):
-                self._error(400, "task 必须是 expand_chapter 或 add_settings")
-                return
-            chapter_order = payload.get("chapter_order")
-            if task == "expand_chapter":
-                if not isinstance(chapter_order, int) or not 1 <= chapter_order <= 10:
-                    self._error(400, "expand_chapter 需要 1-10 的整数 chapter_order")
-                    return
-                if not next((c for c in project.draft.chapters if c.order == chapter_order), None):
-                    self._error(400, f"第 {chapter_order} 章细纲不存在，请先生成骨架")
-                    return
-
-            provider_name = str(payload.get("provider", "fake")).strip()
-            if provider_name == "ai":
-                try:
-                    llm = OpenAICompatPlanner(llm_session.require_provider())
-                except ProviderError as exc:
-                    self._error(400, str(exc))
-                    return
-            else:
-                llm = FakePlanner(task, chapter_order)
-
-            result = run_planner(
-                llm=llm,
-                project=project,
-                task=task,  # type: ignore[arg-type]
-                workspace=store.root,
-                chapter_order=chapter_order,
-            )
-            self._send_json(200, result.model_dump())
-
-        def _accept_agent_drafts(self, project_id: str, kind: str, payload: dict) -> None:
-            """把用户确认的 agent 候选并入权威数据：beats 挂章节、settings 入设定库。"""
-            if kind not in ("beats", "settings"):
-                self._error(400, "kind 必须是 beats 或 settings")
-                return
-            try:
-                project = store.get(project_id)
-            except KeyError:
-                self._error(404, "项目不存在")
-                return
-            if not isinstance(project, CreationProject):
-                self._error(400, "只有创作项目可接受规划候选")
-                return
-            try:
-                if kind == "beats":
-                    order = int(payload["chapter_order"])
-                    beats = [Beat.model_validate(item) for item in payload.get("beats", [])]
-                    if not beats:
-                        raise ValueError("没有节拍")
-                    chapter = next((c for c in project.draft.chapters if c.order == order), None)
-                    if chapter is None:
-                        self._error(400, f"第 {order} 章不存在")
-                        return
-                    chapter.beats = sorted(beats, key=lambda b: b.order)
-                else:
-                    entries = [SettingEntry.model_validate(item) for item in payload.get("settings", [])]
-                    if not entries:
-                        raise ValueError("没有设定")
-                    # 同名同类型去重后追加
-                    existing = {(s.entry_type, s.name) for s in project.settings}
-                    for entry in entries:
-                        if (entry.entry_type, entry.name) not in existing:
-                            project.settings.append(entry)
-                            existing.add((entry.entry_type, entry.name))
-            except (KeyError, TypeError, ValueError, ValidationError) as exc:
-                self._error(422, f"候选内容不合法：{exc}")
-                return
-            store.save_creation(project)
-            self._send_json(200, project.model_dump())
-
         # ---- 章节正文（#16）----
 
         def _load_creation_for_chapter(
@@ -545,6 +787,36 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 "content": store.read_manuscript(project.meta.id, order),
             }
 
+        def _summarize_chapter_for_writer(
+            self,
+            writer: object,
+            order: int,
+            title: str,
+            chapter_text: str,
+            chapter_hash: str,
+        ) -> ChapterSummary | None:
+            """按本次使用的 writer 取对应的 Provider 产出本章结构化摘要（写后闭环）。
+
+            - FakeChapterWriter 走离线 FakeProvider（确定性、无网络）；
+            - OpenAICompatChapterWriter 走已配置 key 的 OpenAICompatProvider；
+            其余 writer 类型暂不支持自动摘要，返回 None（不让主线降级）。
+            Provider 抛错时返回 None，确保正文生成成功但摘要失败不会污染回包。
+            """
+            provider: object
+            if isinstance(writer, FakeChapterWriter):
+                provider = FakeProvider()
+            elif isinstance(writer, OpenAICompatChapterWriter):
+                inner = getattr(writer, "_provider", None)
+                if not isinstance(inner, OpenAICompatProvider):
+                    return None
+                provider = inner
+            else:
+                return None
+            try:
+                return provider.summarize_chapter(order, title, chapter_text, chapter_hash)
+            except ProviderError:
+                return None
+
         def _generate_chapter(self, project_id: str, order_text: str, payload: dict) -> None:
             """基于 ContextPack 生成一章正文候选与结构化自评（fake 离线/openai-compat）。"""
             loaded = self._load_creation_for_chapter(project_id, order_text)
@@ -564,8 +836,10 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 self._error(400, f"未知 provider：{provider_name}（可选 fake / ai）")
                 return
 
-            # 唯一上下文来源：ContextPack（不含参考书原文/源路径）
-            pack = build_context_pack(project, target.order)
+            # 唯一上下文来源：ContextPack（不含参考书原文/源路径）；
+            # 已落盘的章节摘要一并注入，使后续章节能检索到本书已写内容（t3 缺陷 #3）。
+            summaries = list(project.summaries.values())
+            pack = build_context_pack(project, target.order, summaries=summaries or None)
             try:
                 writing = writer.write_chapter(pack)
             except ProviderError as exc:
@@ -583,6 +857,16 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 updated_at=store.now_iso(),
                 review=writing.review,
             )
+
+            # 写后闭环：由本次使用的 Provider 产出本章结构化摘要并落盘，使"已写章节"
+            # 能进入检索索引（P0① 修复）。Provider 错误只影响闭环，不污染已生成的正文。
+            chapter_hash = str(abs(hash(writing.content)))
+            summary = self._summarize_chapter_for_writer(
+                writer, target.order, target.title, writing.content, chapter_hash
+            )
+            if summary is not None:
+                project.summaries[f"ch{target.order}"] = summary
+
             store.save_creation(project)
             self._send_json(200, self._chapter_payload(project, target.order))
 
@@ -624,6 +908,18 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             record.updated_at = store.now_iso()
             store.save_creation(project)
             self._send_json(200, self._chapter_payload(project, target.order))
+
+        def _lint_chapter(self, project_id: str, order_text: str) -> None:
+            """对已保存的本章正文做 AI 指纹扫描；只读，不改正文一个字。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, _target = loaded
+            content = store.read_manuscript(project.meta.id, int(order_text))
+            if not content or not content.strip():
+                self._error(404, "本章尚无正文，无法扫描")
+                return
+            self._send_json(200, scan_chapter(content).model_dump())
 
         def _confirm_chapter(self, project_id: str, order_text: str) -> None:
             """把一章正文标记为用户确认；不改正文一个字。"""

@@ -25,6 +25,7 @@ class FakePlanner:
 
     model_id = "rule:fake-planner"
     prompt_version = AGENT_PROMPT_VERSION
+    offline = True  # 离线确定性脚本，不产生真实耗时/成本
 
     def __init__(self, task: TaskType, chapter_order: int | None = None) -> None:
         """根据任务类型预生成动作脚本。"""

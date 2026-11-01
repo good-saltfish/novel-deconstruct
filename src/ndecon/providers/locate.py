@@ -62,15 +62,13 @@ def _unique_window(haystack_norm: str, needle_norm: str, original: str) -> tuple
 
 
 def _loose_window(loose: str, needle: str, original: str) -> tuple[int, int] | None:
-    """去标点文本中的唯一窗口映射；实现复用归一化映射（loose 是 norm 的进一步剔除）。
+    """去标点文本中的唯一窗口映射；映射走统一的 `_map_norm_span`。
 
-    为避免建立双重映射表，这里在"去标点后的原文序列"上直接重建字符映射。
+    mapping 记录"loose 的第 k 个字符对应 norm 的第几个非标点字符"，
+    与 `_unique_window` 共用同一个 norm 坐标系，避免两套映射各自漂移。
     """
-    mapping: list[int] = []  # loose 中每个字符在 original 中的下标
     norm_original = _norm(original)
-    for idx, ch in enumerate(norm_original):
-        if not _PUNCT.match(ch):
-            mapping.append(idx)
+    mapping: list[int] = [idx for idx, ch in enumerate(norm_original) if not _PUNCT.match(ch)]
     positions = [m.start() for m in re.finditer(re.escape(needle), loose)]
     if len(positions) != 1:
         return None
@@ -80,15 +78,24 @@ def _loose_window(loose: str, needle: str, original: str) -> tuple[int, int] | N
 
 
 def _map_norm_span(original: str, norm_start: int, norm_end: int) -> tuple[int, int]:
-    """把归一化文本的偏移区间映射回原文偏移。"""
-    # 建立 norm 下标 -> original 下标 的映射（去空白导致多对一关系）
+    """把归一化文本的偏移区间映射回**原文**偏移。
+
+    返回的下标必须能直接切 `original`——这是本函数的全部意义所在。
+    早期版本对 NFKC 后的字符串 `enumerate` 建表，于是表里存的是 NFKC 空间的下标，
+    却被当成原文下标返回。中英混排里 NFKC 会改变长度（`…`→`...` 一个字变三个、
+    全角标点转半角），有一次 Expansion，之后的所有坐标就整体前移——
+    症状是"定位到了，但切回来的是附近的另一句话"。这个文件实测就偏了 40 字。
+
+    修法：**逐原文字符做 NFKC 展开**，每个展开出来的非空白字符都记下它来自哪个原文下标。
+    这样 pos_map 的第 k 项既是"norm 的第 k 个字符"，又直接是原文下标。
+    """
     pos_map: list[int] = []
-    normalized = (
-        unicodedata.normalize("NFKC", original).replace("\r\n", "\n").replace("\r", "\n")
-    )
-    for orig_idx, ch in enumerate(normalized):
-        if not _WS.fullmatch(ch):
-            pos_map.append(orig_idx)
+    for orig_idx, ch in enumerate(original):
+        for expanded in unicodedata.normalize("NFKC", ch):
+            if not _WS.fullmatch(expanded):
+                pos_map.append(orig_idx)
+    if not pos_map:
+        return 0, 0
     start = pos_map[norm_start]
     end = pos_map[min(norm_end - 1, len(pos_map) - 1)] + 1
     return start, end

@@ -26,10 +26,18 @@ class AgentAction(BaseModel):
 
 
 class ToolObservation(BaseModel):
-    """一次工具执行结果（成功或失败都可喂回模型）。"""
+    """一次工具执行结果（成功或失败都可喂回模型）。
+
+    AgentGuide「可读错误」实践：失败时不只给一句截断文本，还带 retryable（模型能否
+    自行纠正后重调）、hint（纠正方向）、partial_result（若有的部分成功结果），
+    让真实模型能像人一样自我反思重试，而不是盲猜。
+    """
 
     ok: bool
     output: str = Field(description="模型可读的文本结果；失败时为截断后的错误")
+    hint: str | None = Field(default=None, description="失败时的纠正提示（成功为 None）")
+    retryable: bool = Field(default=False, description="模型能否修改参数/动作后重试")
+    partial_result: dict | None = Field(default=None, description="部分成功时的中间结果")
 
 
 class TraceStep(BaseModel):
@@ -41,6 +49,8 @@ class TraceStep(BaseModel):
     args: dict
     ok: bool
     observation: str
+    # AgentGuide Trace 建议：记录该步的真实模型耗时（毫秒），None 表示离线/Fake
+    latency_ms: float | None = Field(default=None, description="本步 LLM 调用耗时；离线为 None")
 
 
 class AgentDrafts(BaseModel):
@@ -60,3 +70,6 @@ class AgentRunResult(BaseModel):
     summary: str = Field(default="", description="finish 时的汇报（查询路径/发现的矛盾）")
     drafts: AgentDrafts
     trace: list[TraceStep]
+    # AgentGuide Trace 建议（roadmap B 可观测性）：累计真实调用耗时与估算成本
+    total_latency_ms: float | None = Field(default=None, description="整轮真实 LLM 耗时；离线为 None")
+    cost_usd: float | None = Field(default=None, description="本轮估算 API 成本；离线为 None")

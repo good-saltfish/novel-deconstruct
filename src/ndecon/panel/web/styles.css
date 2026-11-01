@@ -146,37 +146,33 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .ms-review ul { margin: 4px 0 0; padding-left: 18px; }
 .ms-actions { display: flex; gap: 8px; margin-top: 8px; }
 
-/* Planner Agent 规划区（#25） */
-.agent-bar { display: flex; gap: 6px; margin: 8px 0 4px; }
-.agent-panel { display: none; margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 8px; }
-.agent-section-title { font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
-.muted-small { font-size: 12px; color: var(--muted); }
-.cand-item {
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 9px;
-  margin-bottom: 6px;
-  font-size: 12px;
+/* AI 指纹体检表（只读报告） */
+.ms-lint { margin-bottom: 8px; font-size: 12px; }
+.lint-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.lint-table { width: 100%; border-collapse: collapse; }
+.lint-table th, .lint-table td { border: 1px solid var(--line); padding: 4px 7px; text-align: left; }
+.lint-table th { color: var(--muted); font-weight: normal; }
+.lint-ok td:nth-child(2) { color: var(--ok, #4caf50); }
+.lint-bad td:nth-child(2) { color: #e06c75; font-weight: bold; }
+.lint-info td:nth-child(2) { color: var(--muted); }
+
+/* Planner Agent 卡片（#25） */
+.muted { color: var(--muted); font-size: 12px; }
+.agent-beat, .agent-setting {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 9px; margin-bottom: 6px; font-size: 13px; line-height: 1.6;
 }
-.cand-head { color: var(--accent); font-weight: 600; margin-bottom: 2px; }
-.kv-row { display: flex; gap: 6px; line-height: 1.7; }
-.kv-k { color: var(--muted); flex-shrink: 0; }
-.kv-v { color: var(--text); word-break: break-word; }
-.run-status { font-size: 12px; color: var(--accent-2); margin-bottom: 4px; }
-.run-status.warn { color: var(--accent); }
-.run-summary { font-size: 12px; color: var(--muted); margin-bottom: 6px; line-height: 1.6; }
-.run-empty { font-size: 12px; color: var(--danger); margin-bottom: 6px; }
-.agent-trace { font-size: 12px; margin: 6px 0; }
-.agent-trace summary { color: var(--muted); cursor: pointer; }
-.trace-step {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 5px 8px;
-  margin-top: 5px;
-  line-height: 1.6;
+.agent-trace {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; margin-top: 6px; font-size: 12px; color: var(--muted);
+  max-height: 220px; overflow-y: auto;
 }
-.trace-step.trace-err { border-color: var(--danger); }
-.trace-obs { color: var(--muted); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
-.agent-accept { margin-top: 8px; }
+.agent-trace div { margin-bottom: 4px; line-height: 1.6; }
+
+/* 设定候选 / 细纲候选卡片（两套学习方法不同） */
+.plan-tabs { display: flex; gap: 8px; margin-bottom: 4px; }
+.plan-chapter {
+  border-left: 3px solid var(--line); padding-left: 10px; margin: 8px 0 12px;
+}
+.plan-chapter > b { font-size: 13px; }
+.plan-chapter .agent-beat { font-size: 12px; }

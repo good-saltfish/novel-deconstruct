@@ -11,6 +11,36 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class Beat(BaseModel):
+    """单章节拍（Planner Agent 提交的候选；确认后挂到细纲章上）。
+
+    字段与 agent/tools.py 的 DraftBeats 校验保持一致：order 1-10、必填 scene/event。
+    """
+
+    order: int = Field(ge=1, le=10, description="节拍序号（章内顺序）")
+    scene: str = Field(min_length=1, description="场景/地点")
+    characters: list[str] = Field(default_factory=list, description="出场角色")
+    triangle: list[str] = Field(default_factory=list, description="冲突三角角色：persecutor/victim/savior")
+    emotion: str = Field(default="", description="本节拍情绪走向")
+    event: str = Field(min_length=1, description="核心事件")
+    plant_foreshadow: str | None = Field(default=None, description="可选：在本节拍埋下的伏笔")
+
+
+class SettingEntry(BaseModel):
+    """一条结构化设定候选（势力/配角/地点/规则/道具/力量体系等）。
+
+    entry_type 受控词表与 agent/tools.py 的 DraftSetting 校验保持一致。
+    """
+
+    entry_type: Literal[
+        "world_rule", "faction", "character", "location", "item", "power_system"
+    ] = Field(description="设定类型")
+    name: str = Field(min_length=1, description="名称")
+    content: str = Field(min_length=1, description="设定内容/描述")
+    tags: list[str] = Field(default_factory=list, description="标签")
+    related_chapters: list[int] = Field(default_factory=list, description="关联章号 1-10")
+
+
 class Positioning(BaseModel):
     """题材定位。"""
 
@@ -30,31 +60,6 @@ class VolumeOutline(BaseModel):
     ending_hook: str = Field(default="", description="卷尾钩子/升级方向")
 
 
-class Beat(BaseModel):
-    """章节节拍（#25 Planner Agent 产出并经用户确认后挂到细纲章上）。"""
-
-    order: int = Field(ge=1, le=12)
-    scene: str = ""
-    characters: list[str] = Field(default_factory=list)
-    triangle: list[str] = Field(default_factory=list)
-    emotion: str = ""
-    event: str = ""
-    plant_foreshadow: str = ""
-    resolve_foreshadow: str = ""
-
-
-class SettingEntry(BaseModel):
-    """结构化设定库条目（#25）。"""
-
-    entry_type: str = Field(
-        min_length=1, description="world_rule/faction/character/location/item/power_system"
-    )
-    name: str = Field(min_length=1)
-    content: str = Field(min_length=1)
-    tags: list[str] = Field(default_factory=list)
-    related_chapters: list[int] = Field(default_factory=list)
-
-
 class ChapterOutline(BaseModel):
     """前 10 章细纲中的单章条目。"""
 
@@ -63,7 +68,8 @@ class ChapterOutline(BaseModel):
     core_event: str = Field(default="", description="本章核心事件")
     opening_hook: str = Field(default="", description="本章开篇钩子")
     ending_hook: str = Field(default="", description="本章章尾钩子")
-    beats: list[Beat] = Field(default_factory=list, description="已确认节拍（#25）")
+    # Planner Agent 提交的节拍候选；确认（accept）后才作为权威内容挂上。
+    beats: list[Beat] = Field(default_factory=list, description="本章节拍候选（Agent 提交，未确认前为空）")
 
 
 class ProtagonistProfile(BaseModel):
@@ -101,6 +107,36 @@ class CreationDraft(BaseModel):
     def part_names(self) -> list[str]:
         """返回可生成/编辑的部件名清单（固定顺序）。"""
         return ["positioning", "volume", "chapters", "protagonist", "golden_finger"]
+
+
+class ChapterBeatPlan(BaseModel):
+    """细纲阶段为一章产出的节拍序列（候选，未确认前不得合并进 ChapterOutline.beats）。"""
+
+    order: int = Field(ge=1, le=10, description="章号")
+    beats: list[Beat] = Field(default_factory=list, max_length=10, description="本章节拍 3-10 个")
+    emotion_track: str = Field(default="", description="本章情绪走向，如 压→转→爽")
+
+
+class SettingPlan(BaseModel):
+    """设定阶段产物（候选）。
+
+    **候选不代笔**：落到 `CreationProject.settings` 前必须由作者显式确认。
+    """
+
+    entries: list[SettingEntry] = Field(default_factory=list, description="设定条目候选")
+    golden_finger: GoldenFingerSpec | None = Field(default=None, description="金手指候选（含必填代价）")
+    notes: list[str] = Field(default_factory=list, description="产出方的自我说明/学到的方法")
+    model_id: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+
+
+class OutlinePlan(BaseModel):
+    """细纲阶段产物（候选）。"""
+
+    chapters: list[ChapterBeatPlan] = Field(default_factory=list, max_length=10)
+    notes: list[str] = Field(default_factory=list, description="产出方的自我说明/学到的方法")
+    model_id: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
 
 
 # 章节正文生命周期：模型/人工候选 -> 用户确认；重新生成会回到 draft

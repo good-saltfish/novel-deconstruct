@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -161,7 +162,10 @@ def reindex(
         raise typer.BadParameter(str(exc)) from exc
     if not isinstance(project, CreationProject):
         raise typer.BadParameter("reindex 仅支持创作项目；参考书项目不建立 L1 索引")
-    index = build_project_index(project)
+    # 已落盘章节摘要一并注入索引，使 reindex 后的 index.json 真正覆盖本书已写内容
+    # （t3 缺陷 #3/#2 修复）。CLI 保持"显式按需重建"语义，不引入常驻索引服务。
+    summaries = list(project.summaries.values())
+    index = build_project_index(project, summaries or None)
     store.write_project_artifact(project_id, "index.json", index.to_dict())
     typer.secho(
         f"索引完成：{len(index.documents)} 个文档 -> projects/{project_id}/index.json",
@@ -226,6 +230,251 @@ def kb(
             typer.echo(f"   {snippet.text[:200]}")
     else:
         raise typer.BadParameter(f"未知操作：{action}（可选 index / search）")
+
+
+@app.command()
+def lint(
+    input_file: Path = typer.Argument(..., help="待检查的正文文件（UTF-8 .md/.txt，一章）"),
+    strict: bool = typer.Option(False, "--strict", help="有越界项时以非零退出码结束（供 CI/git hook 用）"),
+) -> None:
+    """只读扫描一章正文的"AI 指纹"密度，报告越界项（**不改写、不产出替代文本**）。
+
+    规则与阈值见 docs/ai-writing-workflow.md 5.3；改什么由作者自己决定。
+    """
+    from ndecon.quality.fingerprint import CHAPTER_CALIBRATION_CHARS, scan_chapter
+
+    text = _read_text(input_file)
+    report = scan_chapter(text)
+
+    typer.echo(f"AI 指纹扫描（{report.version}）：{input_file}")
+    typer.echo(f"字数 {report.cjk_chars} / 段落 {report.paragraph_count} / 场景轮换 {report.scene_rotations}")
+    if report.cjk_chars > CHAPTER_CALIBRATION_CHARS:
+        # 阈值按"一章 2000-3500 字"校准；远超该体量时绝对值不可比，如实告知
+        typer.secho(
+            f"注意：阈值按单章约 {CHAPTER_CALIBRATION_CHARS} 字校准，本文 {report.cjk_chars} 字，"
+            f"绝对次数不可直接对比；请按单章文件扫描，或只看比例不看次数。",
+            fg=typer.colors.YELLOW,
+        )
+
+    violations = [item for item in report.findings if item.severity == "warn" and not item.passed]
+    for item in report.findings:
+        marker = "OK  " if item.passed else "越界"
+        color = typer.colors.GREEN if item.passed else typer.colors.YELLOW
+        if item.severity == "info":
+            marker = "提示"
+            color = typer.colors.CYAN
+        suffix = f"（{item.detail}）" if item.detail else ""
+        typer.secho(f"  [{marker}] {item.label} —— 实测 {item.value:g}{suffix}", fg=color)
+
+    if report.passed:
+        typer.secho("结论：全部规则未越界。", fg=typer.colors.GREEN)
+    else:
+        typer.secho(
+            f"结论：{len(violations)} 项越界 —— 这只是密度信号，不是'是不是 AI'的判定；"
+            f"改不改、怎么改由你决定。",
+            fg=typer.colors.YELLOW,
+        )
+        if strict:
+            raise typer.Exit(code=1)
+
+
+@app.command()
+def scaffold(
+    out: Path = typer.Option(Path("."), "--out", help="台账输出目录"),
+    project_id: str = typer.Option("", "--project", help="可选：用创作项目已有细纲/人设预填"),
+    workspace: Path = typer.Option(
+        Path(".ndecon-workspace"), "--workspace", help="项目工作区目录（--project 时读取）"
+    ),
+    force: bool = typer.Option(False, "--force", help="覆盖已存在的台账文件（默认跳过）"),
+) -> None:
+    """生成三份写作台账模板：人物卡 / 伏笔账本 / 章节蓝图（SOP 第 0 周）。
+
+    **只搭骨架，不代笔**：不调模型、不联网、不产出任何创意内容；
+    给了 --project 也只是搬运你已有的细纲与人设字段，没有的就留空。
+    """
+    from ndecon.creation.ledger import write_scaffold
+
+    project: CreationProject | None = None
+    if project_id:
+        project = WorkspaceStore(workspace).get(project_id)
+        if not isinstance(project, CreationProject):
+            raise typer.BadParameter("scaffold 只能用创作项目预填；参考书项目没有细纲与人设")
+
+    written, skipped = write_scaffold(out, project, force=force)
+    typer.secho(f"台账已生成：{len(written)} 份 -> {out}", fg=typer.colors.GREEN)
+    for path in written:
+        typer.echo(f"  新建 {path}")
+    for path in skipped:
+        typer.secho(f"  跳过 {path}（已存在；加 --force 覆盖）", fg=typer.colors.YELLOW)
+    typer.echo("模板只搭骨架，内容由你写；伏笔只登记细纲里显式写出的章尾钩。")
+
+
+@app.command()
+def deconstruct(
+    input_file: Path = typer.Argument(..., help="待拆解的小说正文（UTF-8 .md/.txt，含'第N章'标题行）"),
+    out: Path = typer.Option(Path(".out/deconstruct"), "--out", help="产物输出目录"),
+    book_title: str = typer.Option("", "--title", help="书名；默认取文件名"),
+    provider: str = typer.Option("rule", "--provider", help="rule（离线纯测量）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名；默认读 NOVEL_DECON_MODEL"),
+    max_chapters: int = typer.Option(0, "--max-chapters", help="只拆前 N 章；0 表示全拆"),
+    semantic_chapters: int = typer.Option(
+        40, "--semantic-chapters", help="语义层最多处理前 N 章（规则层仍量全部切出的章）"
+    ),
+    to_kb: bool = typer.Option(False, "--to-kb", help="把 KB 版抄进工作区 kb/deconstructed/ 供下次建库收录"),
+    workspace: Path = typer.Option(
+        Path(".ndecon-workspace"), "--workspace", help="工作区目录（--to-kb 时写入）"
+    ),
+) -> None:
+    """结构化拆书：切成可迁移的零部件（客观测量 + 可选语义层）。
+
+    `rule`（默认）完全离线：只量句长、对话占比、疑似冲突点坐标，**不冒充看懂**。
+    `openai-compat` 会用你自己的 key 补语义层：核心事件、冲突三角、章末钩子、全书骨架。
+    两种模式都产出两份 markdown：作者版（含复核坐标）与 KB 版（只有数值与手法）。
+    """
+    from ndecon.deconstruct.pipeline import (
+        build_full_deconstruction,
+        ingest_into_kb,
+        write_deconstruction,
+    )
+    from ndecon.deconstruct.semantics import DeconstructionError, OpenAICompatDeconstructor
+
+    text = _read_text(input_file)
+    title = book_title or input_file.stem
+
+    deconstructor = None
+    if provider == "rule":
+        pass
+    elif provider == "openai-compat":
+        try:
+            deconstructor = OpenAICompatDeconstructor(OpenAICompatProvider(model=model or None))
+        except ProviderError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    else:
+        raise typer.BadParameter(f"未知 provider：{provider}（可选 rule / openai-compat）")
+
+    try:
+        book = build_full_deconstruction(
+            text,
+            title,
+            deconstructor,
+            source_path=str(input_file),
+            max_chapters=max_chapters or 0,
+            semantic_chapters=semantic_chapters,
+        )
+    except DeconstructionError as exc:
+        typer.secho(f"拆解失败：{exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    author_path, kb_path = write_deconstruction(out, book)
+    label = "规则测量" if deconstructor is None else "规则测量 + 语义层"
+    typer.secho(
+        f"拆解完成（{label}）：{len(book.chapters)} 章 -> {author_path.name} / {kb_path.name}",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(f"作者版（含复核坐标）：{author_path}")
+    typer.echo(f"知识库版（只有数值与手法）：{kb_path}")
+    for warning in book.warnings:
+        typer.secho(f"告警：{warning}", fg=typer.colors.YELLOW)
+
+    if to_kb:
+        target = ingest_into_kb(workspace, book)
+        typer.secho(f"已写入知识库目录：{target}（下次 ndecon kb index 会收录它）", fg=typer.colors.GREEN)
+
+    if deconstructor is None:
+        typer.echo(
+            "当前是纯规则产物：冲突三角/核心事件等语义位留空是**如实留白**，"
+            "加 --provider openai-compat 才会填。"
+        )
+
+
+@app.command()
+def plan(
+    project_id: str = typer.Argument(..., help="创作项目 ID（面板新建或用 workspace 里的 id）"),
+    kind: str = typer.Option("settings", "--kind", help="settings（设定候选）或 outline（细纲候选）"),
+    provider: str = typer.Option("fake", "--provider", help="fake（离线确定性）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+) -> None:
+    """生成**设定**或**细纲**候选（两套学习方法不同，见 creation/plans.py）。
+
+    `settings`：收敛式——先定边界与代价，再定人；检索知识库里"规则/代价/势力"的做法。
+    `outline`：铺开式——沿时间轴排张力；检索知识库里"节奏/密度/钩子"的做法，
+    并把已确认设定当硬约束传入。
+
+    **只给候选，不代笔**：本命令不写回项目，产物打印为 JSON，
+    你在面板里确认（accept）后才会成为权威内容。
+    """
+    from ndecon.creation import plans as creation_plans
+    from ndecon.creation.plan_providers import (
+        FakeOutlinePlanner,
+        FakeSettingPlanner,
+        OpenAICompatOutlinePlanner,
+        OpenAICompatSettingPlanner,
+        PlanError,
+    )
+    from ndecon.kb.corpus import search_knowledge
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("plan 只能用于创作项目；参考书项目没有设定与细纲")
+
+    use_ai = provider in ("ai", "openai-compat")
+    if kind == "settings":
+        try:
+            planner = (
+                OpenAICompatSettingPlanner(OpenAICompatProvider(model=model or None))
+                if use_ai
+                else FakeSettingPlanner()
+            )
+        except ProviderError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        query = creation_plans.SETTING_KB_QUERY
+    elif kind == "outline":
+        try:
+            planner = (
+                OpenAICompatOutlinePlanner(OpenAICompatProvider(model=model or None))
+                if use_ai
+                else FakeOutlinePlanner()
+            )
+        except ProviderError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        query = creation_plans.OUTLINE_KB_QUERY
+    else:
+        raise typer.BadParameter(f"未知 kind：{kind}（可选 settings / outline）")
+
+    snippets = [snippet.model_dump() for snippet in search_knowledge(store.root, query)]
+    try:
+        if kind == "settings":
+            plan_result = planner.plan_settings(
+                project.meta.title, project.genre, project.premise, snippets
+            )
+        else:
+            confirmed = [entry.model_dump() for entry in project.settings]
+            finger = None
+            if project.draft is not None and project.draft.golden_finger is not None:
+                finger = project.draft.golden_finger.model_dump()
+            plan_result = planner.plan_outline(
+                project.meta.title,
+                project.genre,
+                project.premise,
+                confirmed,
+                snippets,
+                golden_finger=finger,
+            )
+    except PlanError as exc:
+        typer.secho(f"候选生成失败：{exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(json.dumps(plan_result.model_dump(), ensure_ascii=False, indent=2))
+    typer.secho(
+        f"\n候选来源 {plan_result.model_id}（{plan_result.prompt_version}）；"
+        f"知识库命中 {len(snippets)} 条。这是候选，未在面板确认前不会写进项目。",
+        fg=typer.colors.YELLOW,
+    )
 
 
 if __name__ == "__main__":
