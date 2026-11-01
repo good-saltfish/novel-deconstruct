@@ -42,7 +42,7 @@ def learning_brief(reference_stats: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _outline_spec() -> dict:
+def _outline_spec(chapter_count: int = 10) -> dict:
     """返回输出 JSON 结构说明（作为消息的一部分，不参与类型校验）。"""
     return {
         "positioning": {
@@ -60,7 +60,7 @@ def _outline_spec() -> dict:
         },
         "chapters": [
             {
-                "order": "1-10 的整数",
+                "order": f"1-{chapter_count} 的整数",
                 "title": "章题",
                 "core_event": "核心事件",
                 "opening_hook": "开篇钩子",
@@ -91,6 +91,8 @@ def full_draft_user_message(
     premise: str,
     reference_stats: list[dict],
     knowledge_snippets: list[dict] | None = None,
+    *,
+    chapter_count: int = 10,
 ) -> str:
     """组装一次性生成全部骨架部件的用户消息。"""
     sections = [
@@ -102,7 +104,7 @@ def full_draft_user_message(
     if knowledge:
         sections.append(knowledge)
     sections.append(
-        "请输出完整骨架 JSON（chapters 恰好 10 条，order 为 1-10）：\n"
-        + json.dumps(_outline_spec(), ensure_ascii=False)
+        f"请输出完整骨架 JSON（chapters 恰好 {chapter_count} 条，order 为 1-{chapter_count}）：\n"
+        + json.dumps(_outline_spec(chapter_count), ensure_ascii=False)
     )
     return "\n\n".join(sections)

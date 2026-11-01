@@ -61,6 +61,7 @@ from ndecon.workspace.models import (
     CreationProject,
     ProjectMeta,
     ReferenceProject,
+    is_usable,
 )
 from ndecon.workspace.store import WorkspaceStore, new_project_id
 
@@ -80,6 +81,26 @@ _CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
 }
+
+
+def _dropped_parts(project: CreationProject) -> list[dict]:
+    """列出「有内容但状态不可用」的骨架部件。
+
+    界面必须能区分两种空：一种是本来就没生成，另一种是生成了但没被接受。
+    后者会让后续章节在上下文里缺掉定位/主角/金手指，是连写崩掉的常见起点，
+    静默显示成「空」等于把故障藏起来。
+    """
+    dropped: list[dict] = []
+    for part in ("positioning", "volume", "protagonist", "golden_finger", "chapters"):
+        state = project.confirmed_parts.get(part)
+        if is_usable(state):
+            continue
+        value = getattr(project.draft, part, None)
+        has_content = bool(value) if not isinstance(value, list) else len(value) > 0
+        if not has_content:
+            continue
+        dropped.append({"part": part, "state": state or "draft"})
+    return dropped
 
 
 def _reference_stats(store: WorkspaceStore, reference_ids: list[str]) -> list[dict]:
@@ -158,8 +179,14 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 parts = path.strip("/").split("/")
                 if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "lint":
                     self._lint_chapter(parts[2], parts[4])
+                elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "context":
+                    self._get_chapter_context(parts[2], parts[4])
+                elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "versions":
+                    self._list_chapter_versions(parts[2], parts[4])
                 elif len(parts) == 5 and parts[3] == "chapters":
                     self._get_chapter(parts[2], parts[4])
+                elif len(parts) == 4 and parts[3] == "runs":
+                    self._list_runs(parts[2])
                 else:
                     self._get_project(path.split("/")[3])
                 return
@@ -371,16 +398,28 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             if not isinstance(project, CreationProject):
                 self._error(400, "只有创作项目可以生成骨架")
                 return
+            # 细纲章数：可到 CHAPTER_ORDER_MAX；缺省沿用 10 章，保持旧行为不变。
+            raw_count = payload.get("chapter_count")
+            chapter_count = 10
+            if raw_count is not None:
+                try:
+                    chapter_count = int(raw_count)
+                except (TypeError, ValueError):
+                    self._error(400, f"chapter_count 必须是整数：{raw_count!r}")
+                    return
+                if not 1 <= chapter_count <= CHAPTER_ORDER_MAX:
+                    self._error(400, f"chapter_count 必须在 1-{CHAPTER_ORDER_MAX} 之间")
+                    return
             use_ai = str(payload.get("provider", "fake")).strip() in ("ai", "openai-compat")
             if use_ai:
                 try:
                     provider = llm_session.require_provider()
-                    creator = OpenAICompatCreator(provider)
+                    creator = OpenAICompatCreator(provider, chapter_count=chapter_count)
                 except ProviderError as exc:
                     self._error(400, str(exc))
                     return
             else:
-                creator = FakeCreator()
+                creator = FakeCreator(chapter_count=chapter_count)
             stats = _reference_stats(store, project.reference_ids)
             # L0.5 学习型知识库：工作区已建库时，按书名/题材/设定检索方法论片段（无索引则空）
             knowledge_query = "\n".join(
@@ -800,6 +839,82 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 "record": record.model_dump() if record is not None else None,
                 "content": store.read_manuscript(project.meta.id, order),
             }
+
+        # ---- 只读观测面：上下文包 / 版本 / run 记录 ----
+        #
+        # 这三个端点存在的唯一理由：界面要显示「引擎到底打算喂给模型什么」。
+        # 少了它，右栏只能显示生成结果，用户无法判断一次失败是模型写得烂，
+        # 还是上下文本来就是空的 —— 后者才是连写崩掉的真正原因。
+
+        def _get_chapter_context(self, project_id: str, order_text: str) -> None:
+            """返回第 N 章的 ContextPack 原文（与 CLI `context --json` 同源）。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            summaries = self._load_project_summaries(project_id)
+            try:
+                pack = build_context_pack(project, target.order, summaries=summaries or None)
+            except ValueError as exc:
+                self._error(400, str(exc))
+                return
+            payload = pack.model_dump()
+            # 未注入部件必须显式列出：前端不许把「被闸门丢掉」显示成「本来就没有」。
+            payload["dropped"] = _dropped_parts(project)
+            self._send_json(200, payload)
+
+        def _list_chapter_versions(self, project_id: str, order_text: str) -> None:
+            """列出某章的历史版本（每次覆盖写都会先存档）。"""
+            try:
+                order = int(order_text)
+            except (TypeError, ValueError):
+                self._error(400, f"章号必须是整数：{order_text!r}")
+                return
+            if not 1 <= order <= CHAPTER_ORDER_MAX:
+                self._error(400, f"章号必须在 1-{CHAPTER_ORDER_MAX} 之间")
+                return
+            try:
+                stamps = store.list_versions(project_id, order)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            self._send_json(200, {"order": order, "versions": stamps})
+
+        def _list_runs(self, project_id: str) -> None:
+            """列出本项目的 run 记录目录与每章终态（可重放的执行台账）。"""
+            try:
+                store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            runs_dir = store.root / "projects" / project_id / "runs"
+            if not runs_dir.is_dir():
+                self._send_json(200, {"runs": []})
+                return
+            runs = []
+            for run_dir in sorted(runs_dir.iterdir()):
+                if not run_dir.is_dir():
+                    continue
+                records = []
+                for path in sorted(run_dir.glob("ch*.json")):
+                    try:
+                        records.append(json.loads(path.read_text(encoding="utf-8")))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                runs.append({
+                    "run_id": run_dir.name,
+                    "chapters": [
+                        {
+                            "order": record.get("order"),
+                            "status": record.get("status"),
+                            "verdict": record.get("gate_verdict"),
+                            "attempts": record.get("attempts"),
+                            "cjk_chars": record.get("cjk_chars"),
+                        }
+                        for record in records
+                    ],
+                })
+            self._send_json(200, {"runs": runs})
 
         def _generate_chapter(self, project_id: str, order_text: str, payload: dict) -> None:
             """基于 ContextPack 生成一章正文候选与结构化自评（fake 离线/openai-compat）。"""

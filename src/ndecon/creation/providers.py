@@ -197,9 +197,12 @@ class OpenAICompatCreator:
     model_id: str
     prompt_version = prompts.PROMPT_VERSION
 
-    def __init__(self, provider: OpenAICompatProvider) -> None:
+    def __init__(self, provider: OpenAICompatProvider, *, chapter_count: int = 10) -> None:
         """包装一个已配置 key 的拆书 provider（共用鉴权/传输/诊断）。"""
+        if chapter_count < 1:
+            raise ValueError(f"chapter_count 必须 ≥1，实际：{chapter_count}")
         self._provider = provider
+        self.chapter_count = chapter_count
         self.model_id = f"openai-compat:{provider.model}"
 
     def generate_draft(
@@ -216,7 +219,8 @@ class OpenAICompatCreator:
             {
                 "role": "user",
                 "content": prompts.full_draft_user_message(
-                    title, genre, premise, reference_stats, knowledge_snippets
+                    title, genre, premise, reference_stats, knowledge_snippets,
+                    chapter_count=self.chapter_count,
                 ),
             },
         ]
