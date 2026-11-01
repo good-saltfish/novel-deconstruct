@@ -231,8 +231,19 @@ class FakeChapterWriter:
             ]
         )
         if pack.open_foreshadows:
-            debt = "；".join(item.description for item in pack.open_foreshadows[:5])
-            paragraphs.append(f"（伏笔照应）行文没有丢下旧线：{debt}。")
+            # 去重后再拼接：细纲章尾钩若被模板复用（多章共用一句），台账里就会有
+            # 多条同文记录，原样连列会立刻撞 repeat_span（同一 12 字片段 ≥3 次）。
+            # 去重是写入侧的正当防御，不是放宽闸门。
+            seen: list[str] = []
+            for item in pack.open_foreshadows:
+                description = item.description.strip()
+                if description and description not in seen:
+                    seen.append(description)
+                if len(seen) >= 5:
+                    break
+            if seen:
+                debt = "；".join(seen)
+                paragraphs.append(f"（伏笔照应）行文没有丢下旧线：{debt}。")
 
         # 场景展开：补足字数到目标带内（CJK 计数与闸门同口径）
         offset = (target.order - 1) * 37

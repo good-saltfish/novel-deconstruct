@@ -130,7 +130,9 @@ class FakeCreator:
                 core_event=self._chapter_event(i),
                 opening_hook=self._chapter_hook(i),
                 ending_hook=(
-                    "新的异常信号出现" if i < self.chapter_count else "卷尾：更大势力现身"
+                    self._chapter_ending_hook(i)
+                    if i < self.chapter_count
+                    else "卷尾：更大势力现身"
                 ),
             )
             for i in range(1, self.chapter_count + 1)
@@ -189,6 +191,30 @@ class FakeCreator:
     def _chapter_hook(order: int) -> str:
         """确定性的章首钩子模板。"""
         return f"以反常现象或一句致命对白开场（第{order}章）"
+
+    @staticmethod
+    def _chapter_ending_hook(order: int) -> str:
+        """章尾钩按十步循环轮转。
+
+        原来 30 章共用同一句「新的异常信号出现」，导致伏笔台账里 29 条一模一样的
+        记录；离线写手把它们连着列出来时必然撞 ``repeat_span``（12 字片段重复 4 次）。
+        这是假数据的缺陷，不是闸门太严——闸门正确地拦住了它。
+        """
+        hooks = [
+            "新的异常信号出现",
+            "旧识带着伤找上门",
+            "金手指忽然失灵一瞬",
+            "有人开始怀疑主角的身份",
+            "代价第一次真正落在旁人身上",
+            "势力递来一个无法拒绝的条件",
+            "同伴的选择出现裂痕",
+            "被掩盖的旧案露出一角",
+            "能力升级伴随新的限制",
+            "更大的门缝里透出光",
+        ]
+        cycle, step = divmod(order - 1, len(hooks))
+        suffix = f"（第{cycle + 1}轮）" if cycle else ""
+        return f"{hooks[step]}{suffix}"
 
 
 class OpenAICompatCreator:

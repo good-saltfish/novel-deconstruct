@@ -218,6 +218,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                     self._generate_chapter(parts[2], parts[4], payload)
                 else:
                     self._confirm_chapter(parts[2], parts[4])
+            elif path.startswith("/api/projects/") and path.endswith("/accept-skeleton"):
+                self._accept_skeleton(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/generate"):
                 self._generate(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
@@ -712,8 +714,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             if not isinstance(raw_chapters, list) or not raw_chapters:
                 self._error(422, "chapters 必须为非空列表")
                 return
-            if len(raw_chapters) > 10:
-                self._error(422, "细纲候选一次最多 10 章")
+            if len(raw_chapters) > CHAPTER_ORDER_MAX:
+                self._error(422, f"细纲候选一次最多 {CHAPTER_ORDER_MAX} 章")
                 return
             plans: list[ChapterBeatPlan] = []
             for item in raw_chapters:
@@ -793,6 +795,89 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             project.confirmed_parts[part] = "human-confirmed"
             store.save_creation(project)
             self._send_json(200, project.model_dump())
+
+        # ---- 骨架自动验收（A1 卷末闸门的骨架侧）----
+
+        def _accept_skeleton(self, project_id: str, payload: dict) -> None:
+            """把骨架里已生成但未确认的部件标成 `auto-accepted`。
+
+            为什么需要这个端点：`_generate` 生成候选后会把 `confirmed_parts` 清空，
+            所有部件停在 `draft`；而 `is_usable()` 只认 auto-accepted / human-confirmed，
+            于是上下文包会把这些部件全部丢弃（`dropped` 里逐个列出），后续每一章都
+            缺定位/主角/金手指，写出来必然崩。全自动连写时没有人来点「确认」，
+            必须有一个「判据通过即入库」的出口。
+
+            判据（都可机械判定，不靠人看）：
+              - 部件内容非空；
+              - 细纲章号从 1 起连续递增（跳号意味着后面会写空章）；
+              - 主角有名字、金手指有描述（空壳部件等于没有）。
+            任何一条不过就整体不验收，并在响应里逐条说明原因——静默通过比不通过更坏。
+
+            请求体可带 `parts: ["positioning", ...]` 只验收指定部件（默认全部）。
+            """
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可以验收骨架")
+                return
+
+            requested = payload.get("parts")
+            if requested is not None and not isinstance(requested, list):
+                self._error(422, "parts 必须是列表")
+                return
+            targets = [str(p) for p in requested] if requested else list(_PART_MODELS) + ["chapters"]
+
+            accepted: list[str] = []
+            rejected: list[dict] = []
+            for part in targets:
+                if part == "chapters":
+                    chapters = project.draft.chapters
+                    if not chapters:
+                        rejected.append({"part": part, "reason": "细纲为空"})
+                        continue
+                    orders = [c.order for c in chapters]
+                    if orders != list(range(1, len(orders) + 1)):
+                        rejected.append({
+                            "part": part,
+                            "reason": f"细纲章号不连续：{orders[:12]}{'…' if len(orders) > 12 else ''}",
+                        })
+                        continue
+                elif part in _PART_MODELS:
+                    if getattr(project.draft, part, None) is None:
+                        rejected.append({"part": part, "reason": "尚未生成"})
+                        continue
+                    if part == "protagonist" and not str(getattr(project.draft, part).name or "").strip():
+                        rejected.append({"part": part, "reason": "主角没有名字"})
+                        continue
+                    if part == "golden_finger":
+                        finger = project.draft.golden_finger
+                        # 字段名照 GoldenFingerSpec 的真实定义（name/form/ability/
+                        # cost_limitation/growth_path），没有 description 字段。
+                        if not str(getattr(finger, "ability", "") or "").strip():
+                            rejected.append({"part": part, "reason": "金手指没有「能做什么」"})
+                            continue
+                        if not str(getattr(finger, "cost_limitation", "") or "").strip():
+                            rejected.append({"part": part, "reason": "金手指没有限制与代价（会写成无敌流）"})
+                            continue
+                else:
+                    rejected.append({"part": part, "reason": "未知部件"})
+                    continue
+                project.confirmed_parts[part] = "auto-accepted"
+                accepted.append(part)
+
+            if accepted:
+                store.save_creation(project)
+            self._send_json(
+                200 if accepted else 422,
+                {
+                    "accepted": accepted,
+                    "rejected": rejected,
+                    "confirmed_parts": dict(project.confirmed_parts),
+                },
+            )
 
         # ---- 章节正文（#16）----
 
