@@ -32,7 +32,7 @@ from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, summarize_chapter
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, GateReport, check_chapter
 from ndecon.retrieval.context import build_context_pack
-from ndecon.workspace.models import CreationProject
+from ndecon.workspace.models import ChapterSummary, CreationProject
 from ndecon.workspace.store import WorkspaceStore
 
 # 修复重写上限：两次。全自动连跑里"无限重试"是灾难——它会让一本书卡在一章上
@@ -85,6 +85,21 @@ def _recent_texts(store: WorkspaceStore, project: CreationProject, order: int, w
     return texts
 
 
+def _load_summaries(store: WorkspaceStore, project_id: str) -> list[ChapterSummary]:
+    """从 summaries/ 目录读取全部章节摘要（按章号升序）。
+
+    摘要外置后，project.json 不再持有整本摘要，读上下文时必须显式加载。
+    单章摘要文件损坏只跳过该章，不影响其余章节的上下文组装。
+    """
+    items: list[ChapterSummary] = []
+    for payload in store.list_summaries(project_id):
+        try:
+            items.append(ChapterSummary(**payload))
+        except (TypeError, ValueError):
+            continue
+    return items
+
+
 def _build_writer(provider: str, provider_obj: object | None) -> object:
     """按 provider 名构造章节生成器；未知 provider 抛 ValueError（由调用方转 400）。"""
     if provider == "fake":
@@ -131,7 +146,9 @@ def run_chapter(
     run.write(record)  # 1) 断点先落盘
 
     target_chars = _target_chars(project, order)
-    summaries = list(project.summaries.values())
+    # 摘要已外置到 summaries/chNNN.json：这里只读已写章节的摘要，
+    # 不再把整本摘要塞在 project.json 里反复反序列化。
+    summaries = _load_summaries(store, project.meta.id)
     pack = build_context_pack(project, order, summaries=summaries or None)
     record.context_hash = content_hash(
         pack.model_dump_json() if hasattr(pack, "model_dump_json") else repr(pack)
@@ -197,10 +214,12 @@ def run_chapter(
     summary = summarize_chapter(writer, order, target.title, content, chapter_hash=digest)
     summary_present = summary is not None
 
-    # 4) 提交：正文 + project.json 一起落，失败则回滚正文
+    # 4) 提交：正文 + 摘要 + project.json 一起落，失败则回滚正文
     previous = store.read_manuscript(project.meta.id, order)
     try:
         store.write_manuscript(project.meta.id, order, content)
+        if summary is not None:
+            store.write_summary(project.meta.id, order, summary.model_dump())
         project.manuscripts[f"ch{order}"] = ManuscriptRecord(
             order=order,
             title=target.title,
@@ -211,8 +230,6 @@ def run_chapter(
             updated_at=store.now_iso(),
             review=getattr(writing, "review", None),
         )
-        if summary is not None:
-            project.summaries[f"ch{order}"] = summary
         project.cursor = max(project.cursor, order)
         store.save_creation(project)
     except Exception as exc:  # noqa: BLE001 - 提交失败必须回滚正文，不能留半提交
@@ -221,6 +238,7 @@ def run_chapter(
         else:
             path = store._manuscript_path(project.meta.id, order)  # noqa: SLF001
             Path(path).unlink(missing_ok=True)
+        store.delete_summary(project.meta.id, order)
         record.attempts = attempt
         record.status = "failed"
         record.ended_at = now_iso()

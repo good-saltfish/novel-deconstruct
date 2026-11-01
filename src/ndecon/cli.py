@@ -164,7 +164,7 @@ def reindex(
         raise typer.BadParameter("reindex 仅支持创作项目；参考书项目不建立 L1 索引")
     # 已落盘章节摘要一并注入索引，使 reindex 后的 index.json 真正覆盖本书已写内容
     # （t3 缺陷 #3/#2 修复）。CLI 保持"显式按需重建"语义，不引入常驻索引服务。
-    summaries = list(project.summaries.values())
+    summaries = _load_project_summaries(store, project_id)
     index = build_project_index(project, summaries or None)
     store.write_project_artifact(project_id, "index.json", index.to_dict())
     typer.secho(
@@ -489,6 +489,23 @@ def _chapter_provider(provider: str, model: str) -> tuple[str, object | None]:
     raise typer.BadParameter(f"未知 provider：{provider}（可选 fake / openai-compat）")
 
 
+def _load_project_summaries(store, project_id: str) -> list:
+    """从 summaries/ 目录加载本书全部章节摘要（外置存储，按章号升序）。
+
+    摘要不再存在 project.json 里，所以凡是要组装上下文或重建索引的地方，
+    都必须显式从这里加载；损坏的单章文件跳过，不拖垮整本。
+    """
+    from ndecon.workspace.models import ChapterSummary
+
+    items = []
+    for payload in store.list_summaries(project_id):
+        try:
+            items.append(ChapterSummary(**payload))
+        except (TypeError, ValueError):
+            continue
+    return items
+
+
 @app.command()
 def context(
     project_id: str = typer.Argument(..., help="创作项目 ID"),
@@ -512,7 +529,7 @@ def context(
     if not isinstance(project, CreationProject):
         raise typer.BadParameter("context 只能用于创作项目；参考书项目没有章节上下文")
 
-    summaries = list(project.summaries.values())
+    summaries = _load_project_summaries(store, project_id)
     pack = build_context_pack(project, order, summaries=summaries or None, k=top_k)
 
     if as_json:
@@ -720,8 +737,7 @@ def summarize(
         typer.secho("摘要生成失败（provider 不支持或调用出错）；正文未改动。", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    project.summaries[f"ch{order}"] = summary
-    store.save_creation(project)
+    store.write_summary(project_id, order, summary.model_dump())
     typer.secho(f"第{order}章摘要已落盘：{summary.gist[:60]}", fg=typer.colors.GREEN)
     typer.echo("提示：跑一次 ndecon reindex 让索引立刻覆盖本章。")
 

@@ -165,21 +165,25 @@ def test_search_own_book_excludes_summary_documents(tmp_path: Path) -> None:
 
 
 def test_summaries_field_round_trips(tmp_path: Path) -> None:
-    """CreationProject.summaries 落盘后回读仍是 ChapterSummary，且不含 quote 原文。"""
+    """章节摘要外置落盘后可回读，且不含 quote 原文。"""
     store = WorkspaceStore(tmp_path)
     project = _creation_project(tmp_path)
     secret = "版权原文密语玖捌柒"
     summary = _chapter_summary(1, "巡夜首晚")
     # 把密语挂到 SourceRef.quote（参考原文证据位）；indexer 永不读取 quote
     summary.plot_points[0].source.quote = secret
-    project.summaries["ch1"] = summary
     store.save_creation(project)
+    # 摘要已外置：写 summaries/chNNN.json，project.json 只留 O(1) 状态
+    store.write_summary(project.meta.id, 1, summary.model_dump())
 
     reloaded = store.get(project.meta.id)
-    assert "ch1" in reloaded.summaries
-    assert reloaded.summaries["ch1"].gist == "巡夜首晚"
+    payload = store.read_summary(project.meta.id, 1)
+    assert payload is not None
+    assert payload["gist"] == "巡夜首晚"
+    summaries = [ChapterSummary(**item) for item in store.list_summaries(project.meta.id)]
+    assert [item.order for item in summaries] == [1]
     # 摘要即便携带 quote 也不进入索引文本（与 indexer 纪律一致：_plot_point_text 不读 quote）
-    index = build_project_index(reloaded, list(reloaded.summaries.values()))
+    index = build_project_index(reloaded, summaries)
     assert secret not in str(index.to_dict())
 
 
@@ -221,7 +225,7 @@ def server(tmp_path):
     srv.server_close()
 
 
-def test_panel_generate_chapter_writes_summary(server) -> None:
+def test_panel_generate_chapter_writes_summary(server, tmp_path) -> None:
     """#16 扩展：Fake 生成一章后，project.summaries 真的多出一条结构摘要（写后闭环）。"""
     from ndecon.panel.server import api_request
 
@@ -236,10 +240,14 @@ def test_panel_generate_chapter_writes_summary(server) -> None:
     )
     assert status == 200, body
 
-    # 重新读项目，确认 summaries 真的落盘了一条 ch1 摘要
-    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
-    assert "ch1" in full["summaries"]
-    summary = full["summaries"]["ch1"]
+    # 摘要已外置到 summaries/chNNN.json，project.json 里不再有整本摘要
+    from pathlib import Path
+
+    summary_file = Path(tmp_path) / "projects" / cre_id / "summaries" / "ch001.json"
+    assert summary_file.is_file(), f"摘要未落盘：{summary_file}"
+    import json
+
+    summary = json.loads(summary_file.read_text(encoding="utf-8"))
     assert summary["order"] == 1
     assert summary["chapter_id"]
     assert isinstance(summary["plot_points"], list) and summary["plot_points"]

@@ -1,4 +1,4 @@
-﻿"""面板应用服务：REST JSON API + 静态单页资源。
+"""面板应用服务：REST JSON API + 静态单页资源。
 
 安全边界：
 - 只绑定 127.0.0.1，不对外暴露；
@@ -43,6 +43,7 @@ from ndecon.creation.plan_providers import (
 )
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
 from ndecon.creation.summarize import content_hash, summarize_chapter
+from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload
 from ndecon.llm.session import (
@@ -756,6 +757,16 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
 
         # ---- 章节正文（#16）----
 
+        def _load_project_summaries(self, project_id: str) -> list[ChapterSummary]:
+            """从 summaries/ 目录加载本书全部章节摘要（摘要已外置，按需读取）。"""
+            items: list[ChapterSummary] = []
+            for payload in store.list_summaries(project_id):
+                try:
+                    items.append(ChapterSummary(**payload))
+                except (TypeError, ValueError):
+                    continue
+            return items
+
         def _load_creation_for_chapter(
             self, project_id: str, order_text: str
         ) -> tuple[CreationProject, ChapterOutline] | None:
@@ -811,7 +822,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
 
             # 唯一上下文来源：ContextPack（不含参考书原文/源路径）；
             # 已落盘的章节摘要一并注入，使后续章节能检索到本书已写内容（t3 缺陷 #3）。
-            summaries = list(project.summaries.values())
+            summaries = self._load_project_summaries(project_id)
             pack = build_context_pack(project, target.order, summaries=summaries or None)
             try:
                 writing = writer.write_chapter(pack)
@@ -842,7 +853,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 chapter_hash=chapter_hash,
             )
             if summary is not None:
-                project.summaries[f"ch{target.order}"] = summary
+                store.write_summary(project_id, target.order, summary.model_dump())
 
             store.save_creation(project)
             self._send_json(200, self._chapter_payload(project, target.order))

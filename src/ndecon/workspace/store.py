@@ -12,7 +12,7 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ndecon.creation.models import CHAPTER_ORDER_MAX
@@ -28,6 +28,8 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-一-鿿]{1,64}$")
 _SAFE_ARTIFACT = re.compile(r"^[a-z0-9][a-z0-9_-]*\.json$")
 # 章节历史版本时间戳白名单（由 _archive_version 生成：YYYYMMDD-HHMMSS-微秒）
 _SAFE_STAMP = re.compile(r"^\d{8}-\d{6}-\d{6}$")
+# 单章摘要文件名（summaries/chNNN.json）；章号位数与正文文件名一致
+_SAFE_SUMMARY = re.compile(r"^ch(\d{3})\.json$")
 # 每章最多保留的历史版本数：够回退到"前几版"，又不会把工作区撑爆
 MAX_CHAPTER_VERSIONS = 20
 
@@ -104,14 +106,34 @@ class WorkspaceStore:
         self._atomic_write_json(self._path_for(project.meta.id), project.model_dump())
 
     def get(self, project_id: str) -> ReferenceProject | CreationProject:
-        """读取项目并按 kind 还原为对应模型；不存在时抛 KeyError。"""
+        """读取项目并按 kind 还原为对应模型；不存在时抛 KeyError。
+
+        兼容旧布局：早期版本把章节摘要塞在 project.json 的 ``summaries`` 里，
+        现在改为 ``summaries/chNNN.json``。读到非空旧字段时自动迁移出去，
+        避免老工作区在摘要外置后"看起来一切正常、实际摘要全丢"。
+        """
         file = self._path_for(project_id)
         if not file.is_file():
             raise KeyError(f"项目不存在：{project_id}")
         data = json.loads(file.read_text(encoding="utf-8"))
         if data["meta"]["kind"] == "reference":
             return ReferenceProject(**data)
-        return CreationProject(**data)
+        project = CreationProject(**data)
+        if project.summaries:
+            self._migrate_inline_summaries(project)
+        return project
+
+    def _migrate_inline_summaries(self, project: CreationProject) -> None:
+        """把 project.json 里的旧摘要搬进 summaries/ 并清空旧字段。"""
+        for key, summary in list(project.summaries.items()):
+            match = re.match(r"^ch(\d+)$", key)
+            if not match:
+                continue
+            order = int(match.group(1))
+            if not self.read_summary(project.meta.id, order):
+                self.write_summary(project.meta.id, order, summary.model_dump())
+        project.summaries = {}
+        self.save_creation(project)
 
     def write_project_artifact(self, project_id: str, filename: str, payload: dict) -> Path:
         """在项目目录内原子写入一个 JSON 产物（如检索索引）；文件名走白名单防穿越。"""
@@ -176,13 +198,25 @@ class WorkspaceStore:
         return path
 
     def _archive_version(self, project_id: str, order: int, content: str) -> Path | None:
-        """把一份旧正文存进版本目录，并裁剪到最近 MAX_CHAPTER_VERSIONS 份。"""
+        """把一份旧正文存进版本目录，并裁剪到最近 MAX_CHAPTER_VERSIONS 份。
+
+        时间戳必须唯一：Windows 上 ``datetime.now()`` 的粒度约 15ms，
+        连续两次改稿可能落在同一刻度，直接覆盖会让「回退本身可撤销」失效。
+        撞名时往后挪一微秒，直到拿到空位。
+        """
         if not content.strip():
             return None
         version_dir = self._version_dir(project_id, order)
         version_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        target = version_dir / f"{stamp}.md"
+        moment = datetime.now()
+        for _ in range(1000):
+            stamp = moment.strftime("%Y%m%d-%H%M%S-%f")
+            target = version_dir / f"{stamp}.md"
+            if not target.exists():
+                break
+            moment += timedelta(microseconds=1)
+        else:  # pragma: no cover - 一千次撞名现实中不会发生
+            raise RuntimeError(f"无法为第 {order} 章分配唯一版本时间戳")
         target.write_text(content, encoding="utf-8")
         versions = sorted(version_dir.glob("*.md"))
         for stale in versions[:-MAX_CHAPTER_VERSIONS]:
@@ -215,6 +249,61 @@ class WorkspaceStore:
         """读取章节正文；尚未生成时返回 None。"""
         path = self._manuscript_path(project_id, order)
         return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    # ---- 章节摘要外置（project.json 不随章数膨胀）-------------------------
+    #
+    # 早期实现把 50 章摘要全塞在 project.json 里：单章摘要 12 KB（40 个情节点
+    # 各带 quote + content_hash），50 章就到 1 MB、占文件 59%，按这个斜率 300 章
+    # 会到 6 MB。而每生成一章都要"读全量 → 改一处 → 写全量"，等于每章都在
+    # 反序列化整本书的摘要。改成每章一个 summaries/chNNN.json 之后，
+    # project.json 只留 O(1) 的游标与状态，摘要按需读取。
+
+    def _summary_dir(self, project_id: str) -> Path:
+        """返回摘要目录 summaries/（不存在时按需创建）。"""
+        path = self._project_dir(project_id) / "summaries"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def summary_path(self, project_id: str, order: int) -> Path:
+        """返回某章摘要文件路径；章号校验与正文同口径。"""
+        self._manuscript_path(project_id, order)  # 复用章号校验
+        return self._summary_dir(project_id) / f"ch{order:03d}.json"
+
+    def write_summary(self, project_id: str, order: int, payload: dict) -> Path:
+        """原子写入单章摘要（调用方负责把模型 dump 成 dict）。"""
+        path = self.summary_path(project_id, order)
+        self._atomic_write_json(path, payload)
+        return path
+
+    def read_summary(self, project_id: str, order: int) -> dict | None:
+        """读取单章摘要；不存在或损坏时返回 None（不拖垮整本读取）。"""
+        path = self.summary_path(project_id, order)
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def list_summaries(self, project_id: str) -> list[dict]:
+        """按章号升序读取全部摘要（供索引重建与上下文组装）。"""
+        directory = self._project_dir(project_id) / "summaries"
+        if not directory.is_dir():
+            return []
+        items: list[tuple[int, dict]] = []
+        for path in directory.glob("ch*.json"):
+            match = _SAFE_SUMMARY.match(path.name)
+            if not match:
+                continue
+            try:
+                items.append((int(match.group(1)), json.loads(path.read_text(encoding="utf-8"))))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return [payload for _, payload in sorted(items)]
+
+    def delete_summary(self, project_id: str, order: int) -> None:
+        """删除单章摘要（章节回滚或重跑时用）；不存在时静默。"""
+        self.summary_path(project_id, order).unlink(missing_ok=True)
 
     def delete(self, project_id: str) -> None:
         """删除整个项目目录（含 manuscripts 子目录）；不存在时静默（删除幂等）。"""
