@@ -12,6 +12,8 @@ from typing import Protocol
 
 from ndecon.creation import plans
 from ndecon.creation.models import (
+    BEAT_ORDER_MAX,
+    CHAPTER_ORDER_MAX,
     Beat,
     ChapterBeatPlan,
     GoldenFingerSpec,
@@ -21,9 +23,9 @@ from ndecon.creation.models import (
 )
 from ndecon.providers.errors import ProviderResponseError
 
-# 一章节拍的上下限：少于 3 个说明没拆分，多于 10 个 Beat.order 装不下
+# 一章节拍的上下限：少于 3 个说明没拆分，多于 BEAT_ORDER_MAX 个 Beat.order 装不下
 MIN_BEATS_PER_CHAPTER = 3
-MAX_BEATS_PER_CHAPTER = 10
+MAX_BEATS_PER_CHAPTER = BEAT_ORDER_MAX
 
 
 class PlanError(RuntimeError):
@@ -100,8 +102,8 @@ def _outline_plan_from_dict(data: dict, model_id: str, prompt_version: str) -> O
             order = int(item["order"])
         except (KeyError, TypeError, ValueError) as exc:
             raise PlanError(f"章节候选缺合法 order：{exc}") from exc
-        if not 1 <= order <= 10:
-            raise PlanError(f"章号 {order} 越界：细纲只覆盖第 1-10 章")
+        if not 1 <= order <= CHAPTER_ORDER_MAX:
+            raise PlanError(f"章号 {order} 越界：允许范围 1-{CHAPTER_ORDER_MAX}")
         beats = [_beat_from_dict(beat) for beat in (item.get("beats") or [])]
         if not MIN_BEATS_PER_CHAPTER <= len(beats) <= MAX_BEATS_PER_CHAPTER:
             raise PlanError(

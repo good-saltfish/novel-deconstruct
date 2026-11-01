@@ -15,6 +15,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from ndecon.creation.models import CHAPTER_ORDER_MAX
 from ndecon.retrieval.bm25 import BM25Index
 from ndecon.workspace.models import (
     CreationProject,
@@ -25,6 +26,10 @@ from ndecon.workspace.models import (
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-一-鿿]{1,64}$")
 # 项目内 JSON 产物文件名白名单（如检索索引 index.json），杜绝目录穿越写法
 _SAFE_ARTIFACT = re.compile(r"^[a-z0-9][a-z0-9_-]*\.json$")
+# 章节历史版本时间戳白名单（由 _archive_version 生成：YYYYMMDD-HHMMSS-微秒）
+_SAFE_STAMP = re.compile(r"^\d{8}-\d{6}-\d{6}$")
+# 每章最多保留的历史版本数：够回退到"前几版"，又不会把工作区撑爆
+MAX_CHAPTER_VERSIONS = 20
 
 
 def new_project_id(kind: str, title: str) -> str:
@@ -139,19 +144,72 @@ class WorkspaceStore:
             return None
 
     def _manuscript_path(self, project_id: str, order: int) -> Path:
-        """返回某章正文文件路径；章号由调用方限定 1-10，文件名服务端生成防穿越。"""
-        if not isinstance(order, int) or not 1 <= order <= 10:
-            raise ValueError(f"非法章号：{order!r}（仅支持 1-10）")
+        """返回某章正文文件路径；章号上限见 CHAPTER_ORDER_MAX，文件名服务端生成防穿越。"""
+        if not isinstance(order, int) or not 1 <= order <= CHAPTER_ORDER_MAX:
+            raise ValueError(f"非法章号：{order!r}（允许 1-{CHAPTER_ORDER_MAX}）")
         return self._project_dir(project_id) / "manuscripts" / f"ch{order:03d}.md"
 
-    def write_manuscript(self, project_id: str, order: int, content: str) -> Path:
-        """原子写入章节正文 Markdown（manuscripts/chNNN.md），返回文件路径。"""
+    def _version_dir(self, project_id: str, order: int) -> Path:
+        """章节历史版本目录：manuscripts/versions/chNNN/。"""
+        if not isinstance(order, int) or not 1 <= order <= CHAPTER_ORDER_MAX:
+            raise ValueError(f"非法章号：{order!r}（允许 1-{CHAPTER_ORDER_MAX}）")
+        return self._project_dir(project_id) / "manuscripts" / "versions" / f"ch{order:03d}"
+
+    def write_manuscript(
+        self, project_id: str, order: int, content: str, *, keep_version: bool = True
+    ) -> Path:
+        """原子写入章节正文 Markdown（manuscripts/chNNN.md），返回文件路径。
+
+        keep_version=True 时，若旧文件存在且内容不同，先把旧正文存一份到
+        manuscripts/versions/chNNN/<时间戳>.md（最多保留 MAX_CHAPTER_VERSIONS 份）。
+        全自动连跑时这一步是"写坏了能回退"的唯一保险。
+        """
         path = self._manuscript_path(project_id, order)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if keep_version and path.is_file():
+            previous = path.read_text(encoding="utf-8")
+            if previous != content:
+                self._archive_version(project_id, order, previous)
         tmp = path.with_suffix(".md.tmp")
         tmp.write_text(content, encoding="utf-8")
         os.replace(tmp, path)
         return path
+
+    def _archive_version(self, project_id: str, order: int, content: str) -> Path | None:
+        """把一份旧正文存进版本目录，并裁剪到最近 MAX_CHAPTER_VERSIONS 份。"""
+        if not content.strip():
+            return None
+        version_dir = self._version_dir(project_id, order)
+        version_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        target = version_dir / f"{stamp}.md"
+        target.write_text(content, encoding="utf-8")
+        versions = sorted(version_dir.glob("*.md"))
+        for stale in versions[:-MAX_CHAPTER_VERSIONS]:
+            stale.unlink(missing_ok=True)
+        return target
+
+    def list_versions(self, project_id: str, order: int) -> list[str]:
+        """列出某章的历史版本时间戳（从旧到新）。"""
+        version_dir = self._version_dir(project_id, order)
+        if not version_dir.is_dir():
+            return []
+        return [item.stem for item in sorted(version_dir.glob("*.md"))]
+
+    def read_version(self, project_id: str, order: int, stamp: str) -> str | None:
+        """读取某章的一个历史版本；时间戳非法或不存在返回 None（不抛错）。"""
+        if not _SAFE_STAMP.match(stamp):
+            return None
+        path = self._version_dir(project_id, order) / f"{stamp}.md"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    def restore_version(self, project_id: str, order: int, stamp: str) -> str | None:
+        """把某章回退到指定历史版本（当前正文会先被存档，回退本身可撤销）。"""
+        content = self.read_version(project_id, order, stamp)
+        if content is None:
+            return None
+        self.write_manuscript(project_id, order, content, keep_version=True)
+        return content
 
     def read_manuscript(self, project_id: str, order: int) -> str | None:
         """读取章节正文；尚未生成时返回 None。"""

@@ -98,7 +98,7 @@ def test_agent_run_guards(server) -> None:
 
     status, body = api_request(
         server, "POST", f"/api/projects/{pid}/agent/runs",
-        {"task": "expand_chapter", "chapter_order": 11},
+        {"task": "expand_chapter", "chapter_order": 1000},
     )
     assert status == 400
 

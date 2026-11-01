@@ -1,8 +1,11 @@
 """工作区存储测试：原子持久化、ID 安全、类型还原、不复制原文。"""
 
+import json
+
 import pytest
 
 from ndecon.creation.models import (
+    CHAPTER_ORDER_MAX,
     CreationDraft,
     GoldenFingerSpec,
     Positioning,
@@ -12,7 +15,7 @@ from ndecon.workspace.models import (
     ProjectMeta,
     ReferenceProject,
 )
-from ndecon.workspace.store import WorkspaceStore, new_project_id
+from ndecon.workspace.store import MAX_CHAPTER_VERSIONS, WorkspaceStore, new_project_id
 
 
 def _meta(store: WorkspaceStore, project_id: str, kind: str, title: str) -> ProjectMeta:
@@ -58,15 +61,45 @@ def test_creation_roundtrip_with_draft(tmp_path) -> None:
             golden_finger=GoldenFingerSpec(name="规则视界", cost_limitation="一日三次"),
             provenance={"positioning": "rule:fake-creator"},
         ),
-        confirmed_parts={"positioning": True},
+        confirmed_parts={"positioning": "human-confirmed"},
     )
     store.save_creation(project)
     loaded = store.get("creation-mybook-1")
     assert isinstance(loaded, CreationProject)
     assert loaded.draft.positioning.genre == "末世"
     assert loaded.draft.golden_finger.cost_limitation == "一日三次"
-    assert loaded.confirmed_parts["positioning"] is True
+    assert loaded.confirmed_parts["positioning"] == "human-confirmed"
     assert store.list_projects()[0].title == "我的书"
+
+
+def test_legacy_bool_confirmed_parts_migrated(tmp_path) -> None:
+    """旧工作区的 bool 状态必须被迁移：True -> human-confirmed，False -> 删键。"""
+    store = WorkspaceStore(tmp_path)
+    legacy = {
+        "meta": {
+            "id": "creation-legacy-1",
+            "kind": "creation",
+            "title": "旧书",
+            "created_at": "2026-10-01T00:00:00",
+        },
+        "genre": "末世",
+        "premise": "",
+        "reference_ids": [],
+        "draft": {"chapters": []},
+        "confirmed_parts": {"positioning": True, "volume": False, "protagonist": True},
+    }
+    project_dir = store.root / "projects" / "creation-legacy-1"
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.json").write_text(
+        json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+    )
+    loaded = store.get("creation-legacy-1")
+    assert isinstance(loaded, CreationProject)
+    assert loaded.confirmed_parts == {
+        "positioning": "human-confirmed",
+        "protagonist": "human-confirmed",
+    }
+    assert "volume" not in loaded.confirmed_parts
 
 
 def test_unsafe_id_rejected(tmp_path) -> None:
@@ -96,9 +129,39 @@ def test_manuscript_write_read_and_scoped_path(tmp_path) -> None:
     assert path.parent.name == "manuscripts"
     assert store.read_manuscript("creation-ms-1", 1) is not None
     assert store.read_manuscript("creation-ms-1", 2) is None
-    for bad_order in (0, 11, -1, "1"):
+    for bad_order in (0, CHAPTER_ORDER_MAX + 1, -1, "1"):
         with pytest.raises(ValueError):
             store.write_manuscript("creation-ms-1", bad_order, "x")  # type: ignore[arg-type]
+
+
+def test_manuscript_versions_archived_and_restorable(tmp_path) -> None:
+    """改稿必须留版本：覆盖前先存档，能列出、能读、能回退。"""
+    store = WorkspaceStore(tmp_path)
+    store.save_creation(CreationProject(meta=_meta(store, "creation-vr-1", "creation", "版本")))
+    store.write_manuscript("creation-vr-1", 1, "第一版。")
+    store.write_manuscript("creation-vr-1", 1, "第二版。")
+    stamps = store.list_versions("creation-vr-1", 1)
+    assert len(stamps) == 1
+    assert store.read_version("creation-vr-1", 1, stamps[0]) == "第一版。"
+    assert store.read_manuscript("creation-vr-1", 1) == "第二版。"
+
+    restored = store.restore_version("creation-vr-1", 1, stamps[0])
+    assert restored == "第一版。"
+    assert store.read_manuscript("creation-vr-1", 1) == "第一版。"
+    # 回退本身也可撤销：第二版已被存档
+    assert len(store.list_versions("creation-vr-1", 1)) == 2
+
+    # 时间戳白名单：穿越写法一律读不到
+    assert store.read_version("creation-vr-1", 1, "../../etc/passwd") is None
+
+
+def test_manuscript_versions_capped(tmp_path) -> None:
+    """版本目录只保留最近 MAX_CHAPTER_VERSIONS 份，避免连跑把磁盘写满。"""
+    store = WorkspaceStore(tmp_path)
+    store.save_creation(CreationProject(meta=_meta(store, "creation-vc-1", "creation", "裁剪")))
+    for index in range(MAX_CHAPTER_VERSIONS + 5):
+        store.write_manuscript("creation-vc-1", 1, f"版本 {index}。")
+    assert len(store.list_versions("creation-vc-1", 1)) == MAX_CHAPTER_VERSIONS
 
 
 def test_delete_removes_manuscript_subdir(tmp_path) -> None:

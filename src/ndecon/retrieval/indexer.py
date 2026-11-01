@@ -1,9 +1,10 @@
-"""确定性建索引：把"本书"已确认的结构数据转成 BM25 语料。
+﻿"""确定性建索引：把"本书"已确认的结构数据转成 BM25 语料。
 
 版权红线（ADR-0004，由本模块的代码结构强制，而非靠自觉）：
 1. 入口只接受 :class:`CreationProject`——参考书项目（ReferenceProject）类型上无法进入，
    参考书的源路径、聚合统计在结构上就不可能进入索引；
-2. 只有用户已确认（confirmed_parts）的骨架部件才入索引，模型草稿不进；
+2. 只有**可用状态**（auto-accepted / human-confirmed）的骨架部件才入索引，
+   draft 不进（全自动链路下 auto-accepted 由闸门判定，不再依赖人工确认）；
 3. 章节摘要只取 gist、情节点一句话概括、角色名、主题标签；
    ``PlotPoint.source.quote``（原文引用）在本模块中根本没有被读取，任何原文片段
    都不可能出现在索引文本里；
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 from ndecon.domain.models import ChapterSummary, PlotPoint
 from ndecon.retrieval.bm25 import BM25Index, IndexedDocument
-from ndecon.workspace.models import CreationProject
+from ndecon.workspace.models import CreationProject, is_usable
 
 # 文档 ID 前缀在模块间共享，context.py 组装上下文时据此排除"本章自己"
 OUTLINE_DOC_PREFIX = "outline-chapter-"
@@ -37,7 +38,7 @@ def documents_from_creation(project: CreationProject) -> list[IndexedDocument]:
     confirmed = project.confirmed_parts
     docs: list[IndexedDocument] = []
 
-    if confirmed.get("positioning") and draft.positioning is not None:
+    if is_usable(confirmed.get("positioning")) and draft.positioning is not None:
         p = draft.positioning
         docs.append(
             IndexedDocument(
@@ -57,7 +58,7 @@ def documents_from_creation(project: CreationProject) -> list[IndexedDocument]:
             )
         )
 
-    if confirmed.get("volume") and draft.volume is not None:
+    if is_usable(confirmed.get("volume")) and draft.volume is not None:
         v = draft.volume
         docs.append(
             IndexedDocument(
@@ -68,7 +69,7 @@ def documents_from_creation(project: CreationProject) -> list[IndexedDocument]:
             )
         )
 
-    if confirmed.get("chapters"):
+    if is_usable(confirmed.get("chapters")):
         for chapter in draft.chapters:
             docs.append(
                 IndexedDocument(
@@ -81,7 +82,7 @@ def documents_from_creation(project: CreationProject) -> list[IndexedDocument]:
                 )
             )
 
-    if confirmed.get("protagonist") and draft.protagonist is not None:
+    if is_usable(confirmed.get("protagonist")) and draft.protagonist is not None:
         hero = draft.protagonist
         docs.append(
             IndexedDocument(
@@ -102,7 +103,7 @@ def documents_from_creation(project: CreationProject) -> list[IndexedDocument]:
             )
         )
 
-    if confirmed.get("golden_finger") and draft.golden_finger is not None:
+    if is_usable(confirmed.get("golden_finger")) and draft.golden_finger is not None:
         finger = draft.golden_finger
         docs.append(
             IndexedDocument(

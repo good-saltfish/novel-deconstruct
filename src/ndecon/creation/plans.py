@@ -108,12 +108,12 @@ def _setting_spec() -> dict:
     }
 
 
-def _outline_spec() -> dict:
+def _outline_spec(chapter_count: int = 10) -> dict:
     """细纲产物的输出结构说明。"""
     return {
         "chapters": [
             {
-                "order": "1-10 的整数",
+                "order": f"1-{chapter_count} 的整数",
                 "emotion_track": "本章情绪走向，如 '压→转→爽'",
                 "beats": [
                     {
@@ -171,11 +171,14 @@ def outline_user_message(
     knowledge_snippets: list[dict] | None = None,
     *,
     golden_finger: dict | None = None,
+    chapter_count: int = 10,
 ) -> str:
     """组装细纲 prompt 的用户消息：铺开式——沿时间轴排张力。
 
     已确认设定在这里是**硬约束**：细纲阶段不许引入设定库之外的能力/势力/规则，
     否则"先是设定层失控，再是细纲层补不了"，两个阶段的边界就白划了。
+
+    chapter_count：本次要覆盖多少章（默认 10，与旧行为一致；长跑演练可调大）。
     """
     knowledge = _kb_block(knowledge_snippets or [], "【节奏与张力的方法论参考】")
     constraints = ""
@@ -193,17 +196,17 @@ def outline_user_message(
         constraints = "\n".join(lines)
 
     task = (
-        "请产出第 1-10 章的节拍细纲，每章 3-10 个节拍。\n"
+        f"请产出第 1-{chapter_count} 章的节拍细纲，每章 3-10 个节拍。\n"
         "硬性要求：\n"
         "- 每个节拍的 event 必须是**动作**（'他决定…''她感到…' 不合格，要写他做了什么）；\n"
         "- 每章至少 2 个节拍给出完整三角（迫害者/受害者/拯救者齐全），"
         "其余节拍允许缺角但必须写明原因；\n"
         "- 第 1 章第一拍必须把钩子句落到具体动作上（不许'一个神秘的电话改变了他的一生'）；\n"
         "- 每章结尾都必须留下未收束的线，并把这个钩子落到该章最后一拍的具体动作上；"
-        "- 第 10 章同样要留通向下一卷的口子；\n"
+        f"- 第 {chapter_count} 章同样要留通向下一卷的口子；\n"
         "- notes 里给出你的节奏配比（例：'第 1-3 章压抑，4 章给反转，7 章再压'）"
         "并说明从方法论参考中借鉴了哪一条（没有就写'未使用'）。\n\n"
-        + json.dumps(_outline_spec(), ensure_ascii=False)
+        + json.dumps(_outline_spec(chapter_count), ensure_ascii=False)
     )
     sections = [_project_brief(title, genre, premise), constraints, knowledge, task]
     return "\n\n".join(part for part in sections if part)

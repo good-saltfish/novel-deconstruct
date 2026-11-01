@@ -256,12 +256,18 @@ function collectCard(container, keys) {
   return out;
 }
 
+// 部件状态三态（B2）：draft / auto-accepted / human-confirmed。
+// 注意 "draft" 是字符串不是空值，不能直接当布尔用，否则草稿会显示成"已确认"。
+function partStateLabel(state, content) {
+  if (state === "human-confirmed") return '<span class="badge ok">已人工确认</span>';
+  if (state === "auto-accepted") return '<span class="badge ok">已自动验收</span>';
+  return content
+    ? '<span class="badge draft">模型候选</span>'
+    : '<span class="badge">未生成</span>';
+}
+
 function partCard(part, titleText, content, confirmed, bodyHtml, onSave) {
-  const badge = confirmed
-    ? '<span class="badge ok">已确认</span>'
-    : content
-      ? '<span class="badge draft">模型候选</span>'
-      : '<span class="badge">未生成</span>';
+  const badge = partStateLabel(confirmed, content);
   const card = document.createElement("div");
   card.className = "card";
   card.innerHTML = `<h4>${titleText} ${badge}</h4><div class="card-body">${bodyHtml}</div>

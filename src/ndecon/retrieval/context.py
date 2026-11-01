@@ -30,7 +30,7 @@ from ndecon.retrieval.indexer import (
     SUMMARY_DOC_PREFIX,
     build_project_index,
 )
-from ndecon.workspace.models import CreationProject
+from ndecon.workspace.models import CreationProject, is_usable
 
 # 上下文片段长度上限：防止长摘要把 prompt 撑爆，确定性截断
 SNIPPET_LIMIT = 120
@@ -64,6 +64,10 @@ class ContextPack(BaseModel):
     retrieved: list[RetrievedDoc] = Field(default_factory=list)
     open_foreshadows: list[ForeshadowEntry] = Field(default_factory=list)
     index_doc_count: int = Field(ge=0)
+    repair_feedback: list[str] = Field(
+        default_factory=list,
+        description="上一版未过硬门的原因；非空表示这是带证据的修复重写，不是新章",
+    )
 
 
 def _snippet(doc: IndexedDocument, score: float) -> RetrievedDoc:
@@ -147,9 +151,11 @@ def build_context_pack(
     return ContextPack(
         project_id=project.meta.id,
         chapter_order=chapter_order,
-        positioning=project.draft.positioning if confirmed.get("positioning") else None,
-        protagonist=project.draft.protagonist if confirmed.get("protagonist") else None,
-        golden_finger=project.draft.golden_finger if confirmed.get("golden_finger") else None,
+        positioning=project.draft.positioning if is_usable(confirmed.get("positioning")) else None,
+        protagonist=project.draft.protagonist if is_usable(confirmed.get("protagonist")) else None,
+        golden_finger=(
+            project.draft.golden_finger if is_usable(confirmed.get("golden_finger")) else None
+        ),
         chapter_outline=target,
         previous_summary=previous_summary,
         previous_summary_source=previous_source,

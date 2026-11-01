@@ -68,7 +68,7 @@ def test_full_loop_import_generate_edit_delete(server) -> None:
         server, "PUT", f"/api/projects/{cre_id}/parts/golden_finger", {"content": finger}
     )
     assert status == 200
-    assert saved["confirmed_parts"]["golden_finger"] is True
+    assert saved["confirmed_parts"]["golden_finger"] == "human-confirmed"
     assert saved["draft"]["provenance"]["golden_finger"] == "user-confirmed"
 
     # 6) 列表含两个项目；删除创作项目后只剩参考书
@@ -218,9 +218,15 @@ def test_chapter_generation_guards(server, monkeypatch) -> None:
     api_request(server, "POST", f"/api/projects/{cre_id}/generate")
 
     status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1000/generate", {"provider": "fake"}
+    )
+    assert status == 400 and "999" in body["error"]
+
+    # B1 解除后：第 11 章不再被硬限挡住，而是看细纲里有没有这一章
+    status, body = api_request(
         server, "POST", f"/api/projects/{cre_id}/chapters/11/generate", {"provider": "fake"}
     )
-    assert status == 400 and "1-10" in body["error"]
+    assert status == 400 and "细纲" in body["error"]
 
     status, body = api_request(
         server, "POST", f"/api/projects/{cre_id}/chapters/xyz/generate", {"provider": "fake"}

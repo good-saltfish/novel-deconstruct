@@ -40,15 +40,17 @@ class Creator(Protocol):
 
 
 def _draft_from_dict(data: dict, model_id: str, prompt_version: str) -> CreationDraft:
-    """把模型 JSON 严格转换为 CreationDraft；章节固定 10 条、顺序 1-10。
+    """把模型 JSON 严格转换为 CreationDraft；章节必须从 1 起连续递增。
 
     任一部件字段不合法直接抛错（pydantic ValidationError 上抛），
     防止半成品骨架写入工作区。
     """
     chapters = [ChapterOutline(**item) for item in data.get("chapters", [])]
     orders = [c.order for c in chapters]
-    if orders != list(range(1, 11)):
-        raise ValueError(f"细纲必须恰好覆盖第 1-10 章，实际：{orders}")
+    if not chapters:
+        raise ValueError("细纲至少需要 1 章")
+    if orders != list(range(1, len(chapters) + 1)):
+        raise ValueError(f"细纲章号必须从 1 起连续递增，实际：{orders}")
     draft = CreationDraft(
         positioning=Positioning(**data["positioning"]),
         volume=VolumeOutline(**data["volume"]),
@@ -69,6 +71,12 @@ class FakeCreator:
 
     model_id = "rule:fake-creator"
     prompt_version = prompts.PROMPT_VERSION
+
+    def __init__(self, chapter_count: int = 10) -> None:
+        """chapter_count：生成多少章细纲；默认 10 与旧行为一致，可调大做长跑演练。"""
+        if chapter_count < 1:
+            raise ValueError(f"chapter_count 必须 ≥1，实际：{chapter_count}")
+        self.chapter_count = chapter_count
 
     def generate_draft(
         self,
@@ -121,9 +129,11 @@ class FakeCreator:
                 title=f"第{i}步",
                 core_event=self._chapter_event(i),
                 opening_hook=self._chapter_hook(i),
-                ending_hook="新的异常信号出现" if i < 10 else "卷尾：更大势力现身",
+                ending_hook=(
+                    "新的异常信号出现" if i < self.chapter_count else "卷尾：更大势力现身"
+                ),
             )
-            for i in range(1, 11)
+            for i in range(1, self.chapter_count + 1)
         ]
         protagonist = ProtagonistProfile(
             name="陆沉（占位名，可改）",
@@ -155,7 +165,10 @@ class FakeCreator:
 
     @staticmethod
     def _chapter_event(order: int) -> str:
-        """确定性的十步事件模板：遭遇→认知→试探→危机→反击→代价→立足→新敌→升级→卷尾。"""
+        """确定性的十步事件模板：遭遇→认知→试探→危机→反击→代价→立足→新敌→升级→卷尾。
+
+        超过 10 章时按十步循环（第 11 章回到第 1 步的变体），保证长跑演练不越界。
+        """
         events = [
             "灾变降临，主角死里逃生并初次发现异常",
             "确认世界规则变化，被迫离开熟悉环境",
@@ -168,7 +181,9 @@ class FakeCreator:
             "金手指首次升级，主角确立短期目标",
             "卷尾对决惨胜，更大世界的门被打开",
         ]
-        return events[order - 1]
+        cycle, step = divmod(order - 1, len(events))
+        suffix = f"（第{cycle + 1}轮）" if cycle else ""
+        return f"{events[step]}{suffix}"
 
     @staticmethod
     def _chapter_hook(order: int) -> str:

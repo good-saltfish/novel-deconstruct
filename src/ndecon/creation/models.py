@@ -10,14 +10,19 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# 章号上限：早期实现硬限 10 章（B1），全自动长篇需要写到数百章，故放到 999。
+# 节拍数是"章内顺序"，与章号无关，单独用 BEAT_ORDER_MAX。
+CHAPTER_ORDER_MAX = 999
+BEAT_ORDER_MAX = 20
+
 
 class Beat(BaseModel):
     """单章节拍（Planner Agent 提交的候选；确认后挂到细纲章上）。
 
-    字段与 agent/tools.py 的 DraftBeats 校验保持一致：order 1-10、必填 scene/event。
+    字段与 agent/tools.py 的 DraftBeats 校验保持一致：order 1-20、必填 scene/event。
     """
 
-    order: int = Field(ge=1, le=10, description="节拍序号（章内顺序）")
+    order: int = Field(ge=1, le=BEAT_ORDER_MAX, description="节拍序号（章内顺序）")
     scene: str = Field(min_length=1, description="场景/地点")
     characters: list[str] = Field(default_factory=list, description="出场角色")
     triangle: list[str] = Field(default_factory=list, description="冲突三角角色：persecutor/victim/savior")
@@ -38,7 +43,7 @@ class SettingEntry(BaseModel):
     name: str = Field(min_length=1, description="名称")
     content: str = Field(min_length=1, description="设定内容/描述")
     tags: list[str] = Field(default_factory=list, description="标签")
-    related_chapters: list[int] = Field(default_factory=list, description="关联章号 1-10")
+    related_chapters: list[int] = Field(default_factory=list, description="关联章号")
 
 
 class Positioning(BaseModel):
@@ -61,9 +66,9 @@ class VolumeOutline(BaseModel):
 
 
 class ChapterOutline(BaseModel):
-    """前 10 章细纲中的单章条目。"""
+    """细纲中的单章条目（章号上限见 CHAPTER_ORDER_MAX）。"""
 
-    order: int = Field(ge=1, le=10)
+    order: int = Field(ge=1, le=CHAPTER_ORDER_MAX)
     title: str = Field(min_length=1)
     core_event: str = Field(default="", description="本章核心事件")
     opening_hook: str = Field(default="", description="本章开篇钩子")
@@ -98,7 +103,7 @@ class CreationDraft(BaseModel):
 
     positioning: Positioning | None = None
     volume: VolumeOutline | None = None
-    chapters: list[ChapterOutline] = Field(default_factory=list, max_length=10)
+    chapters: list[ChapterOutline] = Field(default_factory=list, max_length=CHAPTER_ORDER_MAX)
     protagonist: ProtagonistProfile | None = None
     golden_finger: GoldenFingerSpec | None = None
     # 每部件的模型来源：part_name -> model_id，用于区分模型候选与人工内容
@@ -112,8 +117,8 @@ class CreationDraft(BaseModel):
 class ChapterBeatPlan(BaseModel):
     """细纲阶段为一章产出的节拍序列（候选，未确认前不得合并进 ChapterOutline.beats）。"""
 
-    order: int = Field(ge=1, le=10, description="章号")
-    beats: list[Beat] = Field(default_factory=list, max_length=10, description="本章节拍 3-10 个")
+    order: int = Field(ge=1, le=CHAPTER_ORDER_MAX, description="章号")
+    beats: list[Beat] = Field(default_factory=list, max_length=BEAT_ORDER_MAX, description="本章节拍 3-20 个")
     emotion_track: str = Field(default="", description="本章情绪走向，如 压→转→爽")
 
 
@@ -133,14 +138,14 @@ class SettingPlan(BaseModel):
 class OutlinePlan(BaseModel):
     """细纲阶段产物（候选）。"""
 
-    chapters: list[ChapterBeatPlan] = Field(default_factory=list, max_length=10)
+    chapters: list[ChapterBeatPlan] = Field(default_factory=list, max_length=CHAPTER_ORDER_MAX)
     notes: list[str] = Field(default_factory=list, description="产出方的自我说明/学到的方法")
     model_id: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
 
 
-# 章节正文生命周期：模型/人工候选 -> 用户确认；重新生成会回到 draft
-ManuscriptStatus = Literal["draft", "user-confirmed"]
+# 章节正文生命周期：模型/人工候选 -> 自动验收（全自动链路）-> 用户确认；重新生成会回到 draft
+ManuscriptStatus = Literal["draft", "auto-accepted", "user-confirmed"]
 
 
 class ChapterSelfReview(BaseModel):
@@ -158,7 +163,7 @@ class ChapterSelfReview(BaseModel):
 class ManuscriptRecord(BaseModel):
     """一章正文的元数据与状态；正文本身落盘 manuscripts/chNNN.md，不塞 JSON。"""
 
-    order: int = Field(ge=1, le=10)
+    order: int = Field(ge=1, le=CHAPTER_ORDER_MAX)
     title: str = Field(min_length=1)
     status: ManuscriptStatus = "draft"
     word_count: int = Field(ge=0, description="去空白后的正文字数")

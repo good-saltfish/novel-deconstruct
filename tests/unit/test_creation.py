@@ -41,14 +41,15 @@ def test_reference_stats_influence_selling_points() -> None:
 
 
 def test_draft_from_dict_rejects_bad_chapter_orders() -> None:
-    """章节不是恰好 1-10 时，转换层必须报错而不是写入半成品。"""
+    """章节不是从 1 起连续递增时，转换层必须报错而不是写入半成品。"""
     from ndecon.creation.providers import _draft_from_dict
 
     base = {
         "positioning": {"genre": "末世"},
         "volume": {"volume_title": "首卷"},
         "chapters": [
-            {"order": 1, "title": "一", "core_event": "", "opening_hook": "", "ending_hook": ""}
+            {"order": 1, "title": "一", "core_event": "", "opening_hook": "", "ending_hook": ""},
+            {"order": 3, "title": "三", "core_event": "", "opening_hook": "", "ending_hook": ""},
         ],
         "protagonist": {"name": "阿伏"},
         "golden_finger": {"name": "金手指", "cost_limitation": "有代价"},
@@ -60,3 +61,32 @@ def test_draft_from_dict_rejects_bad_chapter_orders() -> None:
     except ValueError:
         return
     raise AssertionError("不合法章节序列应当被拒绝")
+
+
+def test_draft_from_dict_accepts_many_chapters() -> None:
+    """B1 解除后：细纲可以超过 10 章，只要从 1 起连续递增。"""
+    from ndecon.creation.providers import _draft_from_dict
+
+    chapters = [
+        {"order": i, "title": f"第{i}章", "core_event": "", "opening_hook": "", "ending_hook": ""}
+        for i in range(1, 51)
+    ]
+    base = {
+        "positioning": {"genre": "末世"},
+        "volume": {"volume_title": "首卷"},
+        "chapters": chapters,
+        "protagonist": {"name": "阿伏"},
+        "golden_finger": {"name": "金手指", "cost_limitation": "有代价"},
+    }
+    draft = _draft_from_dict(base, model_id="x", prompt_version="v")
+    assert len(draft.chapters) == 50
+    assert draft.chapters[-1].order == 50
+
+
+def test_fake_creator_respects_chapter_count() -> None:
+    """FakeCreator 可指定章数，长跑演练需要 50 章以上的骨架。"""
+    draft = FakeCreator(chapter_count=50).generate_draft("长跑", "末世", "设定", [])
+    assert len(draft.chapters) == 50
+    assert [c.order for c in draft.chapters] == list(range(1, 51))
+    # 超过 10 章后事件模板按十步循环，不越界
+    assert draft.chapters[10].core_event

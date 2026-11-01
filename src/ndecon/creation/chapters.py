@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Protocol
 
 from ndecon.creation.models import ChapterSelfReview, ChapterWriting
 from ndecon.providers.errors import ProviderResponseError
 from ndecon.providers.openai_compat import OpenAICompatProvider
+from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT
 from ndecon.retrieval.context import ContextPack
 
 CHAPTER_PROMPT_VERSION = "cw-v0"
@@ -74,6 +76,12 @@ def context_brief(pack: ContextPack) -> str:
         lines.append("\n【尚未回收的伏笔（写作时保持一致，勿遗忘）】")
         for debt in pack.open_foreshadows:
             lines.append(f"- 第{debt.opened_order}章埋下：{debt.description}")
+    if pack.repair_feedback:
+        # 带证据的修复重写：把上一版没过硬门的具体原因回灌，
+        # 而不是让它再写一遍——重写不给理由，只会换个方式犯同样的错。
+        lines.append("\n【上一版未通过硬门，必须逐条修正】")
+        for reason in pack.repair_feedback:
+            lines.append(f"- {reason}")
     return "\n".join(lines)
 
 
@@ -112,33 +120,131 @@ class ChapterWriter(Protocol):
 
 
 class FakeChapterWriter:
-    """离线确定性章节占位器：把细纲要素拼成示意正文，明确标记不可直接使用。"""
+    """离线确定性章节占位器：把细纲要素拼成示意正文，明确标记不可直接使用。
+
+    它必须能**产出足够长的正文**（默认对齐 ``CHAPTER_TARGET_CHARS_DEFAULT``）：
+    否则离线路径永远过不了字数硬门，整条"生成→闸门→摘要→提交"链路就只能
+    靠真实 API 验证——既贵又不可复现。占位正文按固定句式池确定性展开，
+    同一章每次生成完全相同（可做断言），不同章之间句式错位（可测新鲜度）。
+    """
 
     model_id = "rule:fake-chapter"
     prompt_version = CHAPTER_PROMPT_VERSION
 
     PLACEHOLDER_BANNER = "【Fake 占位正文：由离线规则生成，仅用于跑通流程，不是可用的小说内容，请替换】"
 
+    # 确定性句式池。**每个池的长度必须互不相同**：句式周期是各池长度的最小公倍数，
+    # 池长全相同会让场景句以该长度循环，直接撞上 repeat_span 硬门（12 字片段 ≥3 次）。
+    # 这里取 12/13/17/19/23/11，最小公倍数极大，连跑几百章都不会自我复读。
+    _SUBJECTS = ("他", "她", "老人", "少年", "掌柜", "差役", "更夫", "船工", "药童", "妇人", "伙计", "书生")
+    _VERBS = ("推开", "掩上", "搁下", "收起", "拂开", "扯紧", "踩过", "绕开", "扶起", "叠好", "挑亮", "按灭", "递过")
+    _OBJECTS = (
+        "半扇木门", "铜制台灯", "一卷旧图", "三枚铜钱", "檐下灯笼", "生锈钥匙",
+        "粗糙麻绳", "褪色信笺", "半页账册", "一只陶碗", "油纸伞", "竹编提篮",
+        "青布包袱", "铁皮匣子", "断齿木梳", "缺口瓷碟", "发潮账本",
+    )
+    _PLACES = (
+        "走廊尽头", "靠窗矮桌", "结霜台阶", "后院井边", "青苔墙根", "阁楼梯口",
+        "药铺柜台", "渡口石阶", "灶间角落", "柴房门口", "戏台后台", "河堤柳下",
+        "祠堂偏厅", "当铺里屋", "磨坊门前", "井台边上", "晒谷场角", "廊下栏杆",
+        "柴垛背后",
+    )
+    _DETAILS = (
+        "灯芯爆响", "铜面模糊", "边角起毛", "指腹留印", "光被晃碎", "落灰很厚",
+        "薄锈泛黄", "字迹淡去", "木纹裂开", "水汽凝结", "绳索发脆", "漆皮剥落",
+        "釉面缺角", "墨迹洇开", "铁器发涩", "布面起皱", "纸角卷起", "石面冰凉",
+        "木屑落了一地", "霜花结了一层", "铜绿沾手", "线头散开", "边沿磕掉一块",
+    )
+    _TAILS = (
+        "他没说话", "她也没回头", "屋里静了片刻", "外面起了风",
+        "远处有人应了一声", "谁都没有再看它", "灯火又暗了一格", "檐水漏得更急",
+        "天光压得很低", "门轴响了一下", "空气里有股腥味",
+    )
+    _TEMPLATES = (
+        "{s}{v}{o}，{p}{d}。",
+        "{s}在{p}{v}{o}，{d}。",
+        "{p}的{o}被{s}{v}，{d}。",
+        "{s}{v}{o}。{d}，{t}。",
+        "{s}{v}了{o}以后，{p}{d}。",
+        "{d}，{s}把{o}{v}。",
+    )
+
+    def __init__(self, target_chars: int = CHAPTER_TARGET_CHARS_DEFAULT) -> None:
+        """``target_chars`` 只影响占位正文长度，不改变结构与自评。"""
+        if target_chars < 1:
+            raise ValueError("target_chars 必须为正整数")
+        self.target_chars = target_chars
+
+    @staticmethod
+    def _strip_wrappers(text: str) -> str:
+        """剥掉摘要里递归套娃的结构前缀。
+
+        摘要由 provider 从正文开头截取，而正文开头又是「（前情承接）上一章：…」，
+        于是每章的摘要都把上一章的摘要整段套进去，第 N 章攒出 N-1 层前缀。
+        这既是重复片段（撞 repeat_span），也会让上下文越滚越长。
+        真模型回显包装时同理，所以在写入侧就剥掉。
+        """
+        cleaned = text
+        for _ in range(20):
+            before = cleaned
+            cleaned = re.sub(r"^（(?:前情承接|开篇钩|核心事件|伏笔照应|章尾钩)）", "", cleaned)
+            cleaned = re.sub(r"^上一章[:：]", "", cleaned)
+            cleaned = cleaned.lstrip("：: 　\n")
+            if cleaned == before:
+                break
+        return cleaned
+
+    def _scene_sentences(self, count: int, offset: int) -> list[str]:
+        """确定性展开场景句：用 ``offset`` 让不同章错开句式，避免跨章整段雷同。"""
+        out: list[str] = []
+        for index in range(count):
+            position = index + offset
+            template = self._TEMPLATES[position % len(self._TEMPLATES)]
+            out.append(
+                template.format(
+                    s=self._SUBJECTS[position % len(self._SUBJECTS)],
+                    v=self._VERBS[(position * 5) % len(self._VERBS)],
+                    o=self._OBJECTS[(position * 7) % len(self._OBJECTS)],
+                    p=self._PLACES[(position * 3) % len(self._PLACES)],
+                    d=self._DETAILS[(position * 11) % len(self._DETAILS)],
+                    t=self._TAILS[(position * 13) % len(self._TAILS)],
+                )
+            )
+        return out
+
     def write_chapter(self, pack: ContextPack) -> ChapterWriting:
-        """按开篇钩→核心事件→章尾钩的固定结构生成确定性占位正文。"""
+        """按开篇钩→核心事件→场景展开→章尾钩的结构生成确定性占位正文。"""
         target = pack.chapter_outline
         paragraphs = [
             self.PLACEHOLDER_BANNER,
         ]
         if pack.previous_summary:
-            paragraphs.append(f"（前情承接）上一章：{pack.previous_summary}。本章紧接其后展开。")
+            paragraphs.append(
+                f"（前情承接）上一章：{self._strip_wrappers(pack.previous_summary)}。本章紧接其后展开。"
+            )
         paragraphs.extend(
             [
                 f"（开篇钩）{target.opening_hook or '本章以一个反常场景开场。'}"
                 "主角在熟悉的日常里被猛地推了一把，局势不容他慢慢理解。",
                 f"（核心事件）{target.core_event}。"
-                "他按照自己一贯的方式先算代价再动手，局面在试探与反击之间来回翻转，"
-                "本章必须交代的推进在这一段落内完成。",
+                "他按照自己一贯的方式先算代价再动手，局面在试探与反击之间来回翻转。",
             ]
         )
         if pack.open_foreshadows:
-            debt = "；".join(item.description for item in pack.open_foreshadows)
+            debt = "；".join(item.description for item in pack.open_foreshadows[:5])
             paragraphs.append(f"（伏笔照应）行文没有丢下旧线：{debt}。")
+
+        # 场景展开：补足字数到目标带内（CJK 计数与闸门同口径）
+        offset = (target.order - 1) * 37
+        cjk_now = len(re.findall(r"[\u4e00-\u9fff]", "\n\n".join(paragraphs)))
+        need = max(0, self.target_chars - cjk_now)
+        scene_count = 0
+        while need > 0 and scene_count < 400:
+            batch = self._scene_sentences(12, offset + scene_count)
+            scene_count += 12
+            paragraphs.append("".join(batch))
+            need -= len(re.findall(r"[\u4e00-\u9fff]", "".join(batch)))
+
         paragraphs.append(
             f"（章尾钩）{target.ending_hook or '新的异常在结尾处露头。'}"
             "问题只解决了一半，更大的压力已经到了门口。"

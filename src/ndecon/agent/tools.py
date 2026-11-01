@@ -169,7 +169,8 @@ class GetOutline(ToolDef):
         """定位并返回目标章细纲；越界/缺失给出可读提示。"""
         chapter = next((c for c in ctx.project.draft.chapters if c.order == params.order), None)  # type: ignore[attr-defined]
         if chapter is None:
-            return f"没有第 {params.order} 章细纲（当前仅 1-10 章）。"
+            total = len(ctx.project.draft.chapters)  # type: ignore[attr-defined]
+            return f"没有第 {params.order} 章细纲（当前细纲共 {total} 章）。"
         return (
             f"第{chapter.order}章《{chapter.title}》｜核心事件：{chapter.core_event}｜"
             f"开篇钩：{chapter.opening_hook or '无'}｜章尾钩：{chapter.ending_hook or '无'}"

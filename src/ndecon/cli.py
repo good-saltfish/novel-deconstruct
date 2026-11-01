@@ -477,5 +477,254 @@ def plan(
     )
 
 
+def _chapter_provider(provider: str, model: str) -> tuple[str, object | None]:
+    """把 CLI 的 provider 名解析成 (txn 用的名字, 可选的已鉴权 provider 对象)。"""
+    if provider == "fake":
+        return "fake", None
+    if provider in ("ai", "openai-compat"):
+        try:
+            return "openai-compat", OpenAICompatProvider(model=model or None)
+        except ProviderError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    raise typer.BadParameter(f"未知 provider：{provider}（可选 fake / openai-compat）")
+
+
+@app.command()
+def context(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    order: int = typer.Argument(..., help="章号（从 1 起）"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+    top_k: int = typer.Option(5, "--top-k", help="相关回顾条数"),
+    as_json: bool = typer.Option(False, "--json", help="输出原始 JSON（供插件与测试逐字段比对）"),
+) -> None:
+    """打印第 N 章的上下文包（生成正文的唯一输入，可离线、可复现）。
+
+    这是"跑不起来"的第一个断点的验收命令：包里有内容才谈得上写正文。
+    五块来源：本书已确认设定 / 本章细纲 / 前章摘要 / 相关回顾 / 未回收伏笔。
+    """
+    from ndecon.retrieval.context import build_context_pack
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("context 只能用于创作项目；参考书项目没有章节上下文")
+
+    summaries = list(project.summaries.values())
+    pack = build_context_pack(project, order, summaries=summaries or None, k=top_k)
+
+    if as_json:
+        typer.echo(pack.model_dump_json(indent=2))
+        return
+
+    typer.secho(f"上下文包 · 第{order}章（索引文档 {pack.index_doc_count} 条）", fg=typer.colors.GREEN)
+    for label, value in (
+        ("定位", pack.positioning),
+        ("主角", pack.protagonist),
+        ("金手指", pack.golden_finger),
+    ):
+        if value is None:
+            typer.secho(f"  {label}：未注入（该部件还不是可用状态）", fg=typer.colors.YELLOW)
+        else:
+            typer.echo(f"  {label}：已注入")
+    typer.echo(f"  本章细纲：第{pack.chapter_outline.order}章《{pack.chapter_outline.title}》")
+    typer.echo(f"  前章摘要：{'有' if pack.previous_summary else '无'}（来源 {pack.previous_summary_source}）")
+    typer.echo(f"  相关回顾：{len(pack.retrieved)} 条")
+    for item in pack.retrieved[:5]:
+        typer.echo(f"    [{item.doc_type}] {item.title}（{item.score:.3f}）")
+    typer.echo(f"  未回收伏笔：{len(pack.open_foreshadows)} 条")
+    for debt in pack.open_foreshadows[:5]:
+        typer.echo(f"    第{debt.opened_order}章埋下：{debt.description}")
+
+
+@app.command()
+def chapter(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    order: int = typer.Argument(..., help="章号（从 1 起）"),
+    provider: str = typer.Option("fake", "--provider", help="fake（离线确定性）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+    max_repairs: int = typer.Option(2, "--max-repairs", help="硬门不过时的修复重写上限"),
+    draft_only: bool = typer.Option(False, "--draft-only", help="过了硬门也落 draft，不自动验收"),
+) -> None:
+    """生成一章并走完事务：上下文 → 正文 → 硬门 → 修复 → 摘要 → 提交。
+
+    过硬门的章节默认落 ``auto-accepted``（全自动连跑的前提）；不过门的**不入库**，
+    只在 runs/ 里留一条带证据的记录——不留半提交。
+    """
+    from ndecon.creation.txn import run_chapter
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("chapter 只能用于创作项目")
+
+    name, provider_obj = _chapter_provider(provider, model)
+    outcome = run_chapter(
+        store,
+        project,
+        order,
+        provider=name,
+        provider_obj=provider_obj,
+        auto_accept=not draft_only,
+        max_repairs=max_repairs,
+    )
+
+    color = typer.colors.GREEN if outcome.committed else typer.colors.RED
+    typer.secho(
+        f"第{outcome.order}章：{outcome.status}（判定 {outcome.verdict}，尝试 {outcome.attempts} 次，"
+        f"{outcome.cjk_chars} 字）",
+        fg=color,
+    )
+    typer.echo(f"  run 记录：projects/{project_id}/runs/{outcome.run_id}/ch{outcome.order:03d}.json")
+    if outcome.summary_present:
+        typer.echo("  摘要：已落盘（后续章节可检索到本章）")
+    else:
+        typer.secho("  摘要：缺失（本章进不了索引，后续章节会忘掉它）", fg=typer.colors.YELLOW)
+    for rule in outcome.hard_failures:
+        typer.secho(f"  未过门：{rule}", fg=typer.colors.YELLOW)
+    for quote in outcome.sample_quotes:
+        typer.echo(f"    证据：{quote}")
+    if outcome.error:
+        typer.secho(f"  错误：{outcome.error}", fg=typer.colors.RED)
+    if not outcome.committed:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def run(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    start: int = typer.Option(0, "--from", help="起始章号；缺省从 project.cursor+1 续跑"),
+    end: int = typer.Option(0, "--to", help="结束章号；0 表示细纲最后一章"),
+    provider: str = typer.Option("fake", "--provider", help="fake（离线确定性）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+    max_repairs: int = typer.Option(2, "--max-repairs", help="单章修复重写上限"),
+    max_chapters: int = typer.Option(0, "--max-chapters", help="本次最多连写几章（0=不限）"),
+    keep_going: bool = typer.Option(False, "--keep-going", help="某章失败仍继续写下一章（默认遇到失败即停）"),
+    run_id: str = typer.Option("", "--run-id", help="自定义 run id（缺省按时间生成）"),
+) -> None:
+    """连写多章：逐章跑事务，进度落在 project.cursor，失败即停。
+
+    断点续跑就是再跑一次本命令——已 committed 的章不会重写，只补没写过的。
+    遇到失败默认停下（而不是硬着头皮写下去），因为连续失败说明是系统性问题。
+    """
+    from ndecon.creation.runlog import new_run_id
+    from ndecon.creation.txn import run_chapter
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("run 只能用于创作项目")
+
+    total = len(project.draft.chapters)
+    first = start or (project.cursor + 1)
+    last = end or total
+    if first < 1 or last > total or first > last:
+        raise typer.BadParameter(f"章号区间不合法：{first}-{last}（细纲共 {total} 章）")
+
+    name, provider_obj = _chapter_provider(provider, model)
+    active_run = run_id or new_run_id()
+    typer.secho(f"连写第 {first}-{last} 章（run {active_run}，provider {name}）", fg=typer.colors.CYAN)
+
+    written = 0
+    failures = 0
+    for order in range(first, last + 1):
+        if max_chapters and written >= max_chapters:
+            typer.echo(f"已达本次上限 {max_chapters} 章，停止。")
+            break
+        # 每章重新读项目：上一章的游标/摘要必须对本轮可见
+        project = store.get(project_id)
+        assert isinstance(project, CreationProject)
+        outcome = run_chapter(
+            store,
+            project,
+            order,
+            provider=name,
+            provider_obj=provider_obj,
+            run_id=active_run,
+            max_repairs=max_repairs,
+        )
+        if outcome.committed:
+            written += 1
+            typer.secho(
+                f"  第{order}章 ✓ {outcome.cjk_chars} 字"
+                f"（尝试 {outcome.attempts} 次，摘要{'有' if outcome.summary_present else '缺'}）",
+                fg=typer.colors.GREEN,
+            )
+        else:
+            failures += 1
+            typer.secho(
+                f"  第{order}章 ✗ {outcome.status}（未过门：{'、'.join(outcome.hard_failures) or '—'}）",
+                fg=typer.colors.RED,
+            )
+            if outcome.error:
+                typer.echo(f"      {outcome.error}")
+            if not keep_going:
+                typer.secho("遇到失败即停：连续失败通常是系统性问题，不要硬写下去。", fg=typer.colors.YELLOW)
+                break
+
+    typer.echo(f"本次写入 {written} 章，失败 {failures} 章。")
+    typer.echo(f"run 记录目录：projects/{project_id}/runs/{active_run}/")
+    if failures:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def summarize(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    order: int = typer.Argument(..., help="章号（从 1 起）"),
+    provider: str = typer.Option("fake", "--provider", help="用哪个 provider 产摘要"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+) -> None:
+    """为已写章节补产结构化摘要并落盘（补上"正文有、索引没有"的断链）。
+
+    正常连跑时摘要在章事务里自动产出；本命令用于修历史章节、或换 provider 后重建。
+    """
+    from ndecon.creation.chapters import FakeChapterWriter
+    from ndecon.creation.summarize import content_hash, summarize_chapter
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("summarize 只能用于创作项目")
+
+    content = store.read_manuscript(project_id, order)
+    if not content:
+        raise typer.BadParameter(f"第 {order} 章还没有正文；先跑 ndecon chapter {project_id} {order}")
+
+    name, provider_obj = _chapter_provider(provider, model)
+    if name == "fake":
+        writer: object = FakeChapterWriter()
+    else:
+        from ndecon.creation.chapters import OpenAICompatChapterWriter
+
+        writer = OpenAICompatChapterWriter(provider_obj)  # type: ignore[arg-type]
+
+    outline = {item.order: item for item in project.draft.chapters}.get(order)
+    title = outline.title if outline else f"第{order}章"
+    summary = summarize_chapter(writer, order, title, content, chapter_hash=content_hash(content))
+    if summary is None:
+        typer.secho("摘要生成失败（provider 不支持或调用出错）；正文未改动。", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    project.summaries[f"ch{order}"] = summary
+    store.save_creation(project)
+    typer.secho(f"第{order}章摘要已落盘：{summary.gist[:60]}", fg=typer.colors.GREEN)
+    typer.echo("提示：跑一次 ndecon reindex 让索引立刻覆盖本章。")
+
+
 if __name__ == "__main__":
     app()

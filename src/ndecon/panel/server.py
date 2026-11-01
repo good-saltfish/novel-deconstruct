@@ -1,4 +1,4 @@
-"""面板应用服务：REST JSON API + 静态单页资源。
+﻿"""面板应用服务：REST JSON API + 静态单页资源。
 
 安全边界：
 - 只绑定 127.0.0.1，不对外暴露；
@@ -23,6 +23,7 @@ from ndecon.agent.runner import run_planner
 from ndecon.creation import plans as creation_plans
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.models import (
+    CHAPTER_ORDER_MAX,
     Beat,
     ChapterBeatPlan,
     ChapterOutline,
@@ -41,7 +42,7 @@ from ndecon.creation.plan_providers import (
     PlanError,
 )
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
-from ndecon.domain.models import ChapterSummary
+from ndecon.creation.summarize import content_hash, summarize_chapter
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload
 from ndecon.llm.session import (
@@ -53,7 +54,6 @@ from ndecon.llm.session import (
 from ndecon.pipeline.runner import run_analyze
 from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
-from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.fingerprint import scan_chapter
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import (
@@ -422,8 +422,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 except (TypeError, ValueError):
                     self._error(400, f"chapter_order 必须是整数：{chapter_order!r}")
                     return
-                if not 1 <= chapter_order <= 10:
-                    self._error(400, "仅支持第 1-10 章")
+                if not 1 <= chapter_order <= CHAPTER_ORDER_MAX:
+                    self._error(400, f"章号必须在 1-{CHAPTER_ORDER_MAX} 之间")
                     return
             else:
                 chapter_order = None
@@ -644,7 +644,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                     self._error(422, f"金手指结构不合法：{exc}")
                     return
                 project.draft.provenance["golden_finger"] = "user-confirmed"
-                project.confirmed_parts["golden_finger"] = True
+                project.confirmed_parts["golden_finger"] = "human-confirmed"
 
             store.save_creation(project)
             self._send_json(200, project.model_dump())
@@ -735,8 +735,11 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             try:
                 if part == "chapters":
                     validated = [ChapterOutline(**item) for item in content]
-                    if [c.order for c in validated] != list(range(1, 11)):
-                        raise ValueError("细纲必须恰好覆盖第 1-10 章")
+                    # 细纲必须从第 1 章起连续递增，长度只受上限约束（B1 解除后不再要求恰好 10 章）
+                    if not validated:
+                        raise ValueError("细纲至少需要 1 章")
+                    if [c.order for c in validated] != list(range(1, len(validated) + 1)):
+                        raise ValueError("细纲章号必须从 1 起连续递增，不允许跳号或重复")
                 elif part in _PART_MODELS:
                     validated = _PART_MODELS[part](**content)
                 else:
@@ -747,7 +750,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 return
             setattr(project.draft, part, validated)
             project.draft.provenance[part] = "user-confirmed"
-            project.confirmed_parts[part] = True
+            project.confirmed_parts[part] = "human-confirmed"
             store.save_creation(project)
             self._send_json(200, project.model_dump())
 
@@ -762,8 +765,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             except (TypeError, ValueError):
                 self._error(400, f"章号必须是整数：{order_text!r}")
                 return None
-            if not 1 <= order <= 10:
-                self._error(400, "仅支持第 1-10 章")
+            if not 1 <= order <= CHAPTER_ORDER_MAX:
+                self._error(400, f"章号必须在 1-{CHAPTER_ORDER_MAX} 之间")
                 return None
             try:
                 project = store.get(project_id)
@@ -786,36 +789,6 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 "record": record.model_dump() if record is not None else None,
                 "content": store.read_manuscript(project.meta.id, order),
             }
-
-        def _summarize_chapter_for_writer(
-            self,
-            writer: object,
-            order: int,
-            title: str,
-            chapter_text: str,
-            chapter_hash: str,
-        ) -> ChapterSummary | None:
-            """按本次使用的 writer 取对应的 Provider 产出本章结构化摘要（写后闭环）。
-
-            - FakeChapterWriter 走离线 FakeProvider（确定性、无网络）；
-            - OpenAICompatChapterWriter 走已配置 key 的 OpenAICompatProvider；
-            其余 writer 类型暂不支持自动摘要，返回 None（不让主线降级）。
-            Provider 抛错时返回 None，确保正文生成成功但摘要失败不会污染回包。
-            """
-            provider: object
-            if isinstance(writer, FakeChapterWriter):
-                provider = FakeProvider()
-            elif isinstance(writer, OpenAICompatChapterWriter):
-                inner = getattr(writer, "_provider", None)
-                if not isinstance(inner, OpenAICompatProvider):
-                    return None
-                provider = inner
-            else:
-                return None
-            try:
-                return provider.summarize_chapter(order, title, chapter_text, chapter_hash)
-            except ProviderError:
-                return None
 
         def _generate_chapter(self, project_id: str, order_text: str, payload: dict) -> None:
             """基于 ContextPack 生成一章正文候选与结构化自评（fake 离线/openai-compat）。"""
@@ -860,9 +833,13 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
 
             # 写后闭环：由本次使用的 Provider 产出本章结构化摘要并落盘，使"已写章节"
             # 能进入检索索引（P0① 修复）。Provider 错误只影响闭环，不污染已生成的正文。
-            chapter_hash = str(abs(hash(writing.content)))
-            summary = self._summarize_chapter_for_writer(
-                writer, target.order, target.title, writing.content, chapter_hash
+            chapter_hash = content_hash(writing.content)
+            summary = summarize_chapter(
+                writer,
+                target.order,
+                target.title,
+                writing.content,
+                chapter_hash=chapter_hash,
             )
             if summary is not None:
                 project.summaries[f"ch{target.order}"] = summary
