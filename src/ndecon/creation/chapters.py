@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from typing import Protocol
 
@@ -21,6 +22,10 @@ from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT
 from ndecon.retrieval.context import ContextPack
 
 CHAPTER_PROMPT_VERSION = "cw-v0"
+
+# 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
+CHAPTER_SCENE_SEED = 20261101
+CHAPTER_SCENE_SEED_STEP = 7919
 
 CHAPTER_SYSTEM_MESSAGE = """你是一名资深中文网络小说写手，为主笔作者撰写章节正文草稿。
 
@@ -135,30 +140,50 @@ class FakeChapterWriter:
 
     # 确定性句式池。**每个池的长度必须互不相同**：句式周期是各池长度的最小公倍数，
     # 池长全相同会让场景句以该长度循环，直接撞上 repeat_span 硬门（12 字片段 ≥3 次）。
-    # 这里取 12/13/17/19/23/11，最小公倍数极大，连跑几百章都不会自我复读。
-    _SUBJECTS = ("他", "她", "老人", "少年", "掌柜", "差役", "更夫", "船工", "药童", "妇人", "伙计", "书生")
-    _VERBS = ("推开", "掩上", "搁下", "收起", "拂开", "扯紧", "踩过", "绕开", "扶起", "叠好", "挑亮", "按灭", "递过")
+    #
+    # 池子还必须**足够大**：跨章新鲜度现在是硬门（与任一近章 Jaccard < 0.30，
+    # 近 20 章并集覆盖率 < 0.45）。原先 12/13/17/19/23/11 的小池实测相邻章
+    # Jaccard = 0.71、覆盖率 = 0.83，离线连写第二十章就会被自己的闸门拦下。
+    # 扩到 30/30/34/32/30/15 后实测 Jaccard = 0.036、覆盖率 = 0.069。
+    _SUBJECTS = (
+        "他", "她", "老人", "少年", "掌柜", "差役", "更夫", "船工", "药童", "妇人",
+        "伙计", "书生", "铁匠", "挑夫", "脚夫", "驿卒", "绣娘", "镖师", "道人", "乞丐",
+        "游侠", "匠人", "寡妇", "医者", "盐商", "捕快", "书吏", "童仆", "账房", "货郎",
+    )
+    _VERBS = (
+        "推开", "掩上", "搁下", "收起", "拂开", "扯紧", "踩过", "绕开", "扶起", "叠好",
+        "挑亮", "按灭", "递过", "掀开", "抵住", "翻检", "拍净", "塞进", "拖走", "架起",
+        "钉死", "拧断", "裹紧", "铺开", "挑开", "按平", "抱走", "扛起", "抬过", "塞回",
+    )
     _OBJECTS = (
         "半扇木门", "铜制台灯", "一卷旧图", "三枚铜钱", "檐下灯笼", "生锈钥匙",
         "粗糙麻绳", "褪色信笺", "半页账册", "一只陶碗", "油纸伞", "竹编提篮",
-        "青布包袱", "铁皮匣子", "断齿木梳", "缺口瓷碟", "发潮账本",
+        "青布包袱", "铁皮匣子", "断齿木梳", "缺口瓷碟", "发潮账本", "锈铁锁",
+        "裂口陶罐", "旧铜镜", "残破匾额", "湿草席", "褪色旗", "断柄锄",
+        "磨秃的笔", "卷边地图", "缺角印章", "半截蜡烛", "竹节烟杆", "破渔网",
+        "枯枝扫帚", "斑驳算盘", "松动的门闩", "带泥的靴",
     )
     _PLACES = (
         "走廊尽头", "靠窗矮桌", "结霜台阶", "后院井边", "青苔墙根", "阁楼梯口",
         "药铺柜台", "渡口石阶", "灶间角落", "柴房门口", "戏台后台", "河堤柳下",
         "祠堂偏厅", "当铺里屋", "磨坊门前", "井台边上", "晒谷场角", "廊下栏杆",
-        "柴垛背后",
+        "柴垛背后", "驿道拐角", "山神庙前", "旧宅天井", "酒肆后厨", "铁匠铺炉边",
+        "码头木栈", "荒田田埂", "县衙照壁", "钟楼下", "破庙廊下", "老槐树底",
+        "塘边石埠", "染坊后院",
     )
     _DETAILS = (
         "灯芯爆响", "铜面模糊", "边角起毛", "指腹留印", "光被晃碎", "落灰很厚",
         "薄锈泛黄", "字迹淡去", "木纹裂开", "水汽凝结", "绳索发脆", "漆皮剥落",
         "釉面缺角", "墨迹洇开", "铁器发涩", "布面起皱", "纸角卷起", "石面冰凉",
         "木屑落了一地", "霜花结了一层", "铜绿沾手", "线头散开", "边沿磕掉一块",
+        "蛛网挂着灰", "苔痕爬上砖缝", "麻绳勒出沟", "炭灰积成堆", "裂痕顺着木纹走",
+        "油渍印在袖口", "碎瓦散在脚边",
     )
     _TAILS = (
         "他没说话", "她也没回头", "屋里静了片刻", "外面起了风",
         "远处有人应了一声", "谁都没有再看它", "灯火又暗了一格", "檐水漏得更急",
-        "天光压得很低", "门轴响了一下", "空气里有股腥味",
+        "天光压得很低", "门轴响了一下", "空气里有股腥味", "脚步声停在门外",
+        "窗纸抖了一下", "烛芯偏了半寸", "风声灌进廊下",
     )
     _TEMPLATES = (
         "{s}{v}{o}，{p}{d}。",
@@ -167,6 +192,12 @@ class FakeChapterWriter:
         "{s}{v}{o}。{d}，{t}。",
         "{s}{v}了{o}以后，{p}{d}。",
         "{d}，{s}把{o}{v}。",
+        "{s}把{o}{v}到{p}，{d}。",
+        "{p}那头，{s}{v}{o}，{t}。",
+        "{s}没{v}那{o}，只{d}。",
+        "{o}还搁在{p}，{d}，{t}。",
+        "{s}绕过{p}的{o}，{d}。",
+        "{p}，{o}被{s}{v}，{d}，{t}。",
     )
 
     def __init__(self, target_chars: int = CHAPTER_TARGET_CHARS_DEFAULT) -> None:
@@ -194,20 +225,29 @@ class FakeChapterWriter:
                 break
         return cleaned
 
-    def _scene_sentences(self, count: int, offset: int) -> list[str]:
-        """确定性展开场景句：用 ``offset`` 让不同章错开句式，避免跨章整段雷同。"""
+    def _scene_sentences(self, count: int, seed: int) -> list[str]:
+        """确定性展开场景句：按章播种的独立序列，保证跨章不雷同。
+
+        早期实现用 `position = index + (order-1)*37` 做线性错位，但一章要展开
+        一百多句，37 的步长让相邻两章大半句子落在同一区间——实测相邻章 Jaccard
+        0.71、近 20 章并集覆盖率 0.83，直接撞上新鲜度硬门。步长调大只是把冲突
+        推到十几章之后（池周期有限），治不了根。
+
+        改成每章一个独立伪随机序列：同章每次生成逐字节相同（可断言），异章之间
+        几乎不重合。代价是不再"错位可预测"，但那是测试的偏好，不是正确性要求。
+        """
+        rng = random.Random(seed)
         out: list[str] = []
-        for index in range(count):
-            position = index + offset
-            template = self._TEMPLATES[position % len(self._TEMPLATES)]
+        for _ in range(count):
+            template = self._TEMPLATES[rng.randrange(len(self._TEMPLATES))]
             out.append(
                 template.format(
-                    s=self._SUBJECTS[position % len(self._SUBJECTS)],
-                    v=self._VERBS[(position * 5) % len(self._VERBS)],
-                    o=self._OBJECTS[(position * 7) % len(self._OBJECTS)],
-                    p=self._PLACES[(position * 3) % len(self._PLACES)],
-                    d=self._DETAILS[(position * 11) % len(self._DETAILS)],
-                    t=self._TAILS[(position * 13) % len(self._TAILS)],
+                    s=self._SUBJECTS[rng.randrange(len(self._SUBJECTS))],
+                    v=self._VERBS[rng.randrange(len(self._VERBS))],
+                    o=self._OBJECTS[rng.randrange(len(self._OBJECTS))],
+                    p=self._PLACES[rng.randrange(len(self._PLACES))],
+                    d=self._DETAILS[rng.randrange(len(self._DETAILS))],
+                    t=self._TAILS[rng.randrange(len(self._TAILS))],
                 )
             )
         return out
@@ -246,7 +286,7 @@ class FakeChapterWriter:
                 paragraphs.append(f"（伏笔照应）行文没有丢下旧线：{debt}。")
 
         # 场景展开：补足字数到目标带内（CJK 计数与闸门同口径）
-        offset = (target.order - 1) * 37
+        offset = CHAPTER_SCENE_SEED + (target.order - 1) * CHAPTER_SCENE_SEED_STEP
         cjk_now = len(re.findall(r"[\u4e00-\u9fff]", "\n\n".join(paragraphs)))
         need = max(0, self.target_chars - cjk_now)
         scene_count = 0

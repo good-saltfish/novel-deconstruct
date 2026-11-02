@@ -129,16 +129,22 @@ class _GoodWriter(FakeChapterWriter):
     测出来的就不是真实连跑路径。
     """
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text) -> None:
+        # text 可以是字符串（各章同一份，仅用于单章测试），
+        # 也可以是 ``order -> str`` 的可调用对象（多章连跑必须用后者：
+        # 各章正文一模一样会被跨章新鲜度硬门正确拦下）。
         self._text = text
         self.calls = 0
+
+    def _body(self, order: int) -> str:
+        return self._text(order) if callable(self._text) else self._text
 
     def write_chapter(self, pack):  # noqa: ANN001
         self.calls += 1
         from ndecon.creation.models import ChapterSelfReview, ChapterWriting
 
         return ChapterWriting(
-            content=self._text,
+            content=self._body(pack.chapter_order),
             review=ChapterSelfReview(
                 hook_strength=3,
                 info_density=3,
@@ -184,6 +190,28 @@ def test_summary_missing_is_hard_failure() -> None:
     assert report.verdict == "repair"
 
 
+def test_cross_chapter_duplicate_is_blocked() -> None:
+    """把上一章原样当新章提交必须被拦：这是长篇连写最致命的崩法。
+
+    阈值来自 167 本真实网文标定（相邻章 Jaccard 最高 0.0185），
+    模板化重写 0.72、原样复制 1.0，判别力足够。
+    """
+    first = _long_text(2600, seed=20261101)
+    second = _long_text(2600, seed=20261101 + 7919)
+
+    fresh = check_chapter(second, target_chars=2600, previous_texts=[first])
+    assert fresh.verdict == "pass"
+    assert not any(f.rule == "cross_chapter_similarity" for f in fresh.hard_failures)
+
+    copied = check_chapter(first, target_chars=2600, previous_texts=[first])
+    assert any(f.rule == "cross_chapter_similarity" for f in copied.hard_failures)
+    assert copied.verdict == "repair"
+    assert copied.soft_scores["cross_chapter_overlap"] >= 0.9
+
+    # 模板化程度只记分不阻断（真实模型输出的分布还没有样本，硬拦会误杀占位正文）
+    assert "freshness_containment" in copied.soft_scores
+
+
 def test_run_chapter_commits_and_records(tmp_path, monkeypatch) -> None:
     """过关的章：正文落盘、摘要落盘、游标推进、run 记录为 committed。"""
     store = _store(tmp_path)
@@ -195,7 +223,7 @@ def test_run_chapter_commits_and_records(tmp_path, monkeypatch) -> None:
     assert outcome.status == "committed"
     assert outcome.verdict == "pass"
     assert outcome.summary_present is True
-    assert store.read_manuscript(project.meta.id, 1) == writer._text
+    assert store.read_manuscript(project.meta.id, 1) == writer._body(1)
 
     reloaded = store.get(project.meta.id)
     assert reloaded.manuscripts["ch1"].status == "auto-accepted"
@@ -272,7 +300,8 @@ def test_resume_skips_committed(tmp_path, monkeypatch) -> None:
     """resume 只补没提交的章：已 committed 的章不许重写（否则连跑会反复烧钱）。"""
     store = _store(tmp_path)
     project = _project(store, chapters=3)
-    writer = _GoodWriter(_long_text(2600))
+    # 每章正文必须不同：一模一样会被跨章新鲜度硬门（正确地）拦下。
+    writer = _GoodWriter(lambda order: _long_text(2600, seed=20261101 + order * 7919))
     monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
 
     run_id = new_run_id()

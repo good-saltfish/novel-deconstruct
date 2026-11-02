@@ -4,7 +4,7 @@
 
 - 能翻译成判据的，就写死在这里，交给机器判——**判据写不出来，那一步就不能自动化**；
 - 判据分两级：**硬门**不通过就重写/丢弃（verdict=repair/reject），
-  **软门**只记分不阻断（新鲜度、指纹密度），用于事后度量与调参；
+  **软门**只记分不阻断（AI 味指纹密度、新鲜度得分），用于事后度量与调参；
 - 本模块**只判定、不改写**：不产出替代文本，避免"自动改稿"把作者痕迹抹平；
 - 每条失败都带**可定位的证据**（原文例句），否则人无从复核，机器也就无从改。
 
@@ -31,6 +31,21 @@ WORD_BAND_HIGH = 1.15
 REPEAT_MIN_LEN = 12
 REPEAT_MIN_COUNT = 3
 ADJACENT_MIN_LEN = 8
+
+# 跨章新鲜度：单章内部的 repeat_span 只能抓"一段话说了三遍"，抓不到
+# "整章都长得像上一章"——后者才是长篇连写最常见的崩法（模板化、换个名字重写一遍）。
+#
+# 阈值不是拍的，是拿 167 本真实网文（40 章窗口、去空白、5-gram）标出来的：
+#   · 相邻章 Jaccard：真实书最高 0.0185（p95 0.0108），模板化 Fake 正文 0.72
+#   · 近 20 章并集覆盖率：真实书最高 0.2739（p95 0.1406），Fake 正文 0.85
+# Jaccard 判别力可靠（16 倍余量），所以做硬门，阈值 0.30。
+# 并集覆盖率度量的是**词汇饱和**而非重复写作，任何合成模板生成器天然饱和
+# （实测词池扩到 200 项仍有 0.78），拿它硬拦会误杀离线占位正文；真实模型输出的
+# 分布我们还没有样本，没有分布的阈值就是凭猜 —— 所以它只记分（软门）。
+FRESHNESS_WINDOW = 20
+FRESHNESS_NGRAM = 5
+CROSS_CHAPTER_JACCARD_MAX = 0.30
+FRESHNESS_CONTAINMENT_REPORT = 0.45
 
 # 工程词 tier1：这些词只该出现在提纲/内部记录里，出现在正文说明模型把
 # 自己的任务描述漏进了作品。tier2（本章/下一章/读者/伏笔）太常见，只提示不拦。
@@ -222,7 +237,7 @@ def _check_engineering_words(text: str) -> GateFailure | None:
     )
 
 
-def _freshness(text: str, previous_texts: list[str], ngram: int = 5) -> float:
+def _freshness(text: str, previous_texts: list[str], ngram: int = FRESHNESS_NGRAM) -> float:
     """软门：与近若干章的 5-gram 重复率（1.0=全新，0.0=全旧）。"""
     def grams(value: str) -> set[str]:
         body = re.sub(r"\s+", "", value)
@@ -238,6 +253,72 @@ def _freshness(text: str, previous_texts: list[str], ngram: int = 5) -> float:
         return 1.0
     overlap = len(current & previous) / len(current)
     return round(1.0 - overlap, 4)
+
+
+def _ngrams(value: str) -> set[str]:
+    body = re.sub(r"\s+", "", value)
+    size = FRESHNESS_NGRAM
+    return {body[i : i + size] for i in range(max(0, len(body) - size + 1))}
+
+
+def _cross_chapter_metrics(text: str, previous_texts: list[str]) -> tuple[float, float, str]:
+    """返回 (与近章最高 Jaccard, 被近 20 章并集覆盖比例, 最像的那一章原文)。
+
+    两个指标衡量的是不同的东西，所以不能互换，也不能一起当硬门：
+
+    · Jaccard（本章 vs **任一**近章）：抓"整章就是上一章换个说法重写"。
+      真实网文 167 本实测最高 0.0185（p95 0.0108），模板化正文 0.72 —— 判别力可靠，
+      所以它做硬门。
+    · containment（本章 vs 近 20 章**并集**）：抓"每章都从同一句式池里抽"。
+      但它度量的是**词汇饱和**，不是重复写作：真实书最高 0.2739，而任何合成模板
+      生成器天然饱和（实测扩到 200 项词池仍有 0.78）—— 用它做硬门会误杀所有
+      模板化占位正文，包括我们自己离线跑通链路用的 Fake 路径。真实模型输出的
+      containment 分布我们还没有样本，**没有分布的阈值就是凭猜**，所以它只记分。
+    """
+    if not previous_texts:
+        return 0.0, 0.0, ""
+
+    current = _ngrams(text)
+    if not current:
+        return 0.0, 0.0, ""
+
+    window = previous_texts[-FRESHNESS_WINDOW:]
+    worst_overlap = 0.0
+    worst_text = ""
+    union: set[str] = set()
+    for item in window:
+        other = _ngrams(item)
+        if not other:
+            continue
+        union |= other
+        ratio = len(current & other) / len(current | other)
+        if ratio > worst_overlap:
+            worst_overlap, worst_text = ratio, item
+
+    containment = len(current & union) / len(current) if union else 0.0
+    return worst_overlap, containment, worst_text
+
+
+def _check_cross_chapter(text: str, previous_texts: list[str]) -> list[GateFailure]:
+    """硬门 4：跨章新鲜度（只看 Jaccard，containment 只记分）。
+
+    只跟近章比，不比全书：长篇允许有意复现（呼应、回收伏笔），
+    但连续几章都长一样就是系统性问题，不是手法。
+    """
+    worst_overlap, _containment, worst_text = _cross_chapter_metrics(text, previous_texts)
+    if worst_overlap < CROSS_CHAPTER_JACCARD_MAX:
+        return []
+    return [
+        GateFailure(
+            gate="freshness",
+            rule="cross_chapter_similarity",
+            detail=(
+                f"与近章整体相似度 {worst_overlap:.2f}"
+                f"（阈值 {CROSS_CHAPTER_JACCARD_MAX}），疑似把上一章换个说法重写"
+            ),
+            evidence=_evidence(worst_text, width=80),
+        )
+    ]
 
 
 def check_chapter(
@@ -268,6 +349,8 @@ def check_chapter(
         if failure is not None:
             hard.append(failure)
 
+    hard.extend(_check_cross_chapter(text, previous_texts))
+
     if not summary_present:
         hard.append(
             GateFailure(
@@ -279,8 +362,15 @@ def check_chapter(
         )
 
     report = fingerprint_report if fingerprint_report is not None else scan_chapter(text)
+    _worst_overlap, _containment, _ = _cross_chapter_metrics(text, previous_texts)
     soft: dict[str, float] = {
         "freshness": _freshness(text, previous_texts),
+        # 模板化程度只记分不阻断：真实模型输出的分布还没样本，硬拦会误杀占位正文。
+        "freshness_containment": round(_containment, 4),
+        "freshness_containment_warn": (
+            1.0 if _containment >= FRESHNESS_CONTAINMENT_REPORT else 0.0
+        ),
+        "cross_chapter_overlap": round(_worst_overlap, 4),
         "fingerprint_passed": 1.0 if getattr(report, "passed", False) else 0.0,
     }
     for finding in getattr(report, "findings", []) or []:
