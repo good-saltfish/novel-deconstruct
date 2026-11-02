@@ -42,7 +42,9 @@ from ndecon.creation.plan_providers import (
     PlanError,
 )
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
+from ndecon.creation.runlog import new_run_id
 from ndecon.creation.summarize import content_hash, summarize_chapter
+from ndecon.creation.txn import MAX_REPAIR_ATTEMPTS, run_chapter
 from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload
@@ -205,7 +207,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 len(parts) == 6
                 and parts[:2] == ["api", "projects"]
                 and parts[3] == "chapters"
-                and parts[5] in ("generate", "confirm")
+                and parts[5] in ("generate", "confirm", "run", "restore")
             )
             if path == "/api/projects/import":
                 self._import_reference(payload)
@@ -216,6 +218,10 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             elif chapter_post:
                 if parts[5] == "generate":
                     self._generate_chapter(parts[2], parts[4], payload)
+                elif parts[5] == "run":
+                    self._run_chapter_txn(parts[2], parts[4], payload)
+                elif parts[5] == "restore":
+                    self._restore_chapter_version(parts[2], parts[4], payload)
                 else:
                     self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/accept-skeleton"):
@@ -224,6 +230,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 self._generate(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
                 self._run_agent(path.split("/")[3], payload)
+            elif path.startswith("/api/projects/") and path.endswith("/runs"):
+                self._run_chapters_txn(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/plan/settings"):
                 self._plan_settings(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/plan/outline"):
@@ -1122,6 +1130,209 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             project.manuscripts[key].status = "user-confirmed"
             project.manuscripts[key].updated_at = store.now_iso()
             store.save_creation(project)
+            self._send_json(200, self._chapter_payload(project, target.order))
+
+        # ---- 写操作：走章事务（带闸门、run 记录、失败回滚）--------------------
+        #
+        # `_generate_chapter`（/generate）保留为"只产候选、不过闸门"的旧路径，
+        # 面板要的是 /run：它调 run_chapter，判 pass 才落盘，并留下可重放的 run 记录。
+        # 两条路径并存不是冗余——候选预览不需要闸门，自动连写必须经过闸门。
+
+        def _resolve_provider(self, provider_name: str) -> tuple[str, object | None] | None:
+            """把 provider 名解析成 (规范名, provider 对象)；失败时已回错误并返回 None。"""
+            if provider_name == "fake":
+                return "fake", None
+            if provider_name in ("openai-compat", "ai"):
+                try:
+                    return "openai-compat", llm_session.require_provider()
+                except ProviderError as exc:
+                    self._error(400, str(exc))
+                    return None
+            self._error(400, f"未知 provider：{provider_name}（可选 fake / ai）")
+            return None
+
+        def _run_chapter_txn(self, project_id: str, order_text: str, payload: dict) -> None:
+            """跑一章事务：生成 → 硬门 → 修复重写 ≤2 次 → 摘要 → 提交，返回章事务结果。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            provider_name = str(payload.get("provider", "fake")).strip() or "fake"
+            resolved = self._resolve_provider(provider_name)
+            if resolved is None:
+                return
+            name, provider_obj = resolved
+            try:
+                max_repairs = int(payload.get("max_repairs", MAX_REPAIR_ATTEMPTS))
+            except (TypeError, ValueError):
+                self._error(400, f"max_repairs 必须是整数：{payload.get('max_repairs')!r}")
+                return
+            if max_repairs < 0 or max_repairs > 5:
+                self._error(400, "max_repairs 必须在 0-5 之间")
+                return
+            auto_accept = payload.get("auto_accept", True)
+            if not isinstance(auto_accept, bool):
+                self._error(400, f"auto_accept 必须是布尔值：{auto_accept!r}")
+                return
+            try:
+                outcome = run_chapter(
+                    store,
+                    project,
+                    target.order,
+                    provider=name,
+                    provider_obj=provider_obj,
+                    auto_accept=auto_accept,
+                    max_repairs=max_repairs,
+                )
+            except ValueError as exc:
+                self._error(400, str(exc))
+                return
+            # 事务可能已改写 project.json，重新读一遍再组装响应，避免返回旧游标。
+            try:
+                fresh = store.get(project_id)
+            except KeyError:
+                fresh = project
+            body = self._chapter_payload(fresh, target.order) if isinstance(fresh, CreationProject) else {}
+            body["outcome"] = {
+                "order": outcome.order,
+                "status": outcome.status,
+                "verdict": outcome.verdict,
+                "attempts": outcome.attempts,
+                "cjk_chars": outcome.cjk_chars,
+                "summary_present": outcome.summary_present,
+                "hard_failures": outcome.hard_failures,
+                "sample_quotes": outcome.sample_quotes,
+                "error": outcome.error,
+                "run_id": outcome.run_id,
+            }
+            # 没提交时返回 409：正文没落盘，调用方必须知道这不是成功。
+            self._send_json(200 if outcome.committed else 409, body)
+
+        def _run_chapters_txn(self, project_id: str, payload: dict) -> None:
+            """连写多章：逐章跑事务，进度落 project.cursor，默认遇失败即停。
+
+            与 CLI `ndecon run` 同一实现（都调 run_chapter），只是出口不同。
+            每章重新读项目：上一章的游标与摘要必须对本轮可见，否则会重复写已提交章。
+            """
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可以写章节正文")
+                return
+            total = len(project.draft.chapters)
+            if total == 0:
+                self._error(400, "请先生成并保存细纲")
+                return
+
+            def _int_field(name: str, default: int) -> int | None:
+                raw = payload.get(name, default)
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    self._error(400, f"{name} 必须是整数：{raw!r}")
+                    return None
+
+            start = _int_field("from", 0)
+            if start is None:
+                return
+            end = _int_field("to", 0)
+            if end is None:
+                return
+            max_repairs = _int_field("max_repairs", MAX_REPAIR_ATTEMPTS)
+            if max_repairs is None:
+                return
+            if max_repairs < 0 or max_repairs > 5:
+                self._error(400, "max_repairs 必须在 0-5 之间")
+                return
+            provider_name = str(payload.get("provider", "fake")).strip() or "fake"
+            resolved = self._resolve_provider(provider_name)
+            if resolved is None:
+                return
+            name, provider_obj = resolved
+            auto_accept = payload.get("auto_accept", True)
+            if not isinstance(auto_accept, bool):
+                self._error(400, f"auto_accept 必须是布尔值：{auto_accept!r}")
+                return
+
+            first = start or (project.cursor + 1)
+            last = end or total
+            if first < 1 or last > total or first > last:
+                self._error(400, f"章号区间不合法：{first}-{last}（细纲共 {total} 章）")
+                return
+
+            run_id = str(payload.get("run_id", "")).strip() or new_run_id()
+            chapters: list[dict] = []
+            written = 0
+            failures = 0
+            for order in range(first, last + 1):
+                fresh = store.get(project_id)
+                if not isinstance(fresh, CreationProject):
+                    break
+                try:
+                    outcome = run_chapter(
+                        store,
+                        fresh,
+                        order,
+                        provider=name,
+                        provider_obj=provider_obj,
+                        run_id=run_id,
+                        auto_accept=auto_accept,
+                        max_repairs=max_repairs,
+                    )
+                except ValueError as exc:
+                    self._error(400, str(exc))
+                    return
+                chapters.append({
+                    "order": outcome.order,
+                    "status": outcome.status,
+                    "verdict": outcome.verdict,
+                    "attempts": outcome.attempts,
+                    "cjk_chars": outcome.cjk_chars,
+                    "summary_present": outcome.summary_present,
+                    "hard_failures": outcome.hard_failures,
+                    "error": outcome.error,
+                })
+                if outcome.committed:
+                    written += 1
+                else:
+                    failures += 1
+                    # 连续失败通常是系统性问题（provider/提示词/设定崩了），
+                    # 硬写下去只会把整本写坏，所以默认停下。
+                    break
+
+            self._send_json(200, {
+                "run_id": run_id,
+                "from": first,
+                "to": last,
+                "written": written,
+                "failures": failures,
+                "chapters": chapters,
+            })
+
+        def _restore_chapter_version(self, project_id: str, order_text: str, payload: dict) -> None:
+            """把某章回退到历史版本；当前正文会先被存档，回退本身可撤销。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            stamp = str(payload.get("stamp", "")).strip()
+            if not stamp:
+                self._error(400, "缺少 stamp（版本时间戳）")
+                return
+            content = store.restore_version(project_id, target.order, stamp)
+            if content is None:
+                self._error(404, "找不到该版本")
+                return
+            record = project.manuscripts.get(f"ch{target.order}")
+            if record is not None:
+                record.status = "draft"
+                record.word_count = len(re.sub(r"\s+", "", content))
+                record.model_id = f"restored:{stamp}"
+                record.updated_at = store.now_iso()
+                store.save_creation(project)
             self._send_json(200, self._chapter_payload(project, target.order))
 
         # ---- 静态资源 ----

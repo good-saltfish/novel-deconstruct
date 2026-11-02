@@ -259,6 +259,41 @@ def test_chapter_generation_guards(server, monkeypatch) -> None:
     assert status == 400 and "创作项目" in body["error"]
 
 
+def test_chapters_run_batch_writes_and_resumes(server) -> None:
+    """连写端点：一次写多章，进度落 cursor；再调一次从游标续跑不重写已提交章。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "连写书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, batch = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 3, "provider": "fake", "run_id": "run-batch"},
+    )
+    assert status == 200, batch
+    assert batch["written"] == 3 and batch["failures"] == 0
+    assert [ch["order"] for ch in batch["chapters"]] == [1, 2, 3]
+    assert all(ch["status"] == "committed" for ch in batch["chapters"])
+
+    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
+    assert full["cursor"] == 3
+    assert set(full["manuscripts"]) == {"ch1", "ch2", "ch3"}
+
+    # 不传 from：从游标续跑
+    status, more = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs", {"to": 5, "provider": "fake"}
+    )
+    assert status == 200
+    assert more["from"] == 4 and more["written"] == 2
+
+    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
+    assert full["cursor"] == 5
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs", {"from": 9, "to": 4, "provider": "fake"}
+    )
+    assert status == 400 and "区间" in body["error"]
+
+
 def test_static_index_served(server) -> None:
     """面板首页与静态资源可被服务（浏览器入口）。"""
     import urllib.request
@@ -267,3 +302,139 @@ def test_static_index_served(server) -> None:
     with urllib.request.urlopen(f"http://{host}:{port}/", timeout=5) as resp:
         html = resp.read().decode("utf-8")
     assert "ndecon" in html and "小说创作面板" in html
+
+
+def test_chapter_run_txn_commits_and_records(server) -> None:
+    """章事务端点：过闸门才落盘、落 auto-accepted、留 run 记录、游标前进。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "事务书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run", {"provider": "fake"}
+    )
+    assert status == 200, body
+    outcome = body["outcome"]
+    assert outcome["status"] == "committed"
+    assert outcome["verdict"] == "pass"
+    assert outcome["attempts"] == 1
+    assert outcome["cjk_chars"] >= 2000
+    assert outcome["summary_present"] is True
+    assert body["record"]["status"] == "auto-accepted"
+    assert body["content"]
+
+    # 游标前进到第 1 章
+    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
+    assert full["cursor"] == 1
+
+    # run 台账可查
+    status, runs = api_request(server, "GET", f"/api/projects/{cre_id}/runs")
+    assert status == 200
+    chapters = [ch for run in runs["runs"] for ch in run["chapters"]]
+    assert any(ch["order"] == 1 and ch["status"] == "committed" for ch in chapters)
+
+
+def test_chapter_run_txn_rejects_bad_params(server) -> None:
+    """章事务端点的参数边界：章号、provider、max_repairs、auto_accept 都给出可读错误。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "边界书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/xyz/run", {"provider": "fake"}
+    )
+    assert status == 400 and "整数" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/11/run", {"provider": "fake"}
+    )
+    assert status == 400 and "细纲" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run", {"provider": "gpt-xyz"}
+    )
+    assert status == 400 and "未知 provider" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run",
+        {"provider": "fake", "max_repairs": "abc"},
+    )
+    assert status == 400 and "整数" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run",
+        {"provider": "fake", "max_repairs": 9},
+    )
+    assert status == 400 and "0-5" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run",
+        {"provider": "fake", "auto_accept": "yes"},
+    )
+    assert status == 400 and "布尔" in body["error"]
+
+
+def test_chapter_run_txn_draft_only_when_auto_accept_false(server) -> None:
+    """auto_accept=false 时仍要过闸门，但落 draft 等人确认（A3 逐章确认模式）。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "人工确认书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run",
+        {"provider": "fake", "auto_accept": False},
+    )
+    assert status == 200, body
+    assert body["outcome"]["status"] == "committed"
+    assert body["record"]["status"] == "draft"
+
+    status, confirmed = api_request(server, "POST", f"/api/projects/{cre_id}/chapters/1/confirm")
+    assert status == 200
+    assert confirmed["record"]["status"] == "user-confirmed"
+
+
+def test_chapter_restore_version(server) -> None:
+    """版本回退：覆盖写会存档，回退后正文与字数一致，且回退本身可撤销。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "版本书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, first = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/run", {"provider": "fake"}
+    )
+    assert status == 200
+    original = first["content"]
+
+    status, saved = api_request(
+        server, "PUT", f"/api/projects/{cre_id}/chapters/1", {"content": "人工改写后的正文。"}
+    )
+    assert status == 200
+
+    status, versions = api_request(server, "GET", f"/api/projects/{cre_id}/chapters/1/versions")
+    assert status == 200
+    assert len(versions["versions"]) >= 1
+    stamp = versions["versions"][0]
+
+    status, restored = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/restore", {"stamp": stamp}
+    )
+    assert status == 200
+    assert restored["content"] == original
+    assert restored["record"]["model_id"] == f"restored:{stamp}"
+    assert restored["record"]["status"] == "draft"
+
+    # 回退前的人工稿被存成新版本，回退可撤销
+    status, again = api_request(server, "GET", f"/api/projects/{cre_id}/chapters/1/versions")
+    assert len(again["versions"]) > len(versions["versions"])
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/restore", {"stamp": ""}
+    )
+    assert status == 400 and "stamp" in body["error"]
+
+    status, body = api_request(
+        server, "POST", f"/api/projects/{cre_id}/chapters/1/restore", {"stamp": "nope"}
+    )
+    assert status == 404
+
+
