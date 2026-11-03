@@ -33,6 +33,7 @@ from ndecon.providers.errors import (
     ProviderHTTPError,
     ProviderResponseError,
     ProviderSchemaError,
+    ProviderTransportError,
 )
 from ndecon.providers.locate import locate_quote
 from ndecon.providers.retry import call_with_retry
@@ -41,6 +42,27 @@ from ndecon.providers.retry import call_with_retry
 _MAX_CHAPTER_CHARS = 16000
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+
+
+def _resolve_timeout(timeout: float | None) -> float:
+    """解析实际超时秒数：显式参数优先，其次 NOVEL_DECON_TIMEOUT，最后默认 60s。
+
+    长章节（尤其推理型模型先思考再输出）60 秒经常不够，所以留一个环境变量出口，
+    不必改代码就能调大；非法值静默回退默认值而不是启动失败——写书的人不该
+    因为一个拼错的环境变量连面板都打不开。
+    """
+    if timeout is not None and timeout > 0:
+        return float(timeout)
+    raw = os.getenv("NOVEL_DECON_TIMEOUT", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return _DEFAULT_TIMEOUT_SECONDS
+        if value > 0:
+            return value
+    return _DEFAULT_TIMEOUT_SECONDS
 
 
 @dataclass
@@ -66,7 +88,7 @@ class OpenAICompatProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
         max_attempts: int = 4,
         transport: httpx.BaseTransport | None = None,
         sleeper=time.sleep,
@@ -91,8 +113,11 @@ class OpenAICompatProvider:
             )
         self.max_attempts = max_attempts
         self._sleeper = sleeper
+        # 超时值要留成属性：报错文案里必须写出实际秒数与怎么改，
+        # 只写「timed out」用户无从判断是模型慢还是引擎挂了。
+        self._timeout_seconds = _resolve_timeout(timeout)
         self._client = httpx.Client(
-            timeout=timeout,
+            timeout=self._timeout_seconds,
             transport=transport,
             headers={"Authorization": f"Bearer {self.api_key}"},
         )
@@ -101,18 +126,37 @@ class OpenAICompatProvider:
     # ---------- 传输层 ----------
 
     def _post_chat(self, messages: list[dict]) -> str:
-        """发起一次 chat/completions 请求并返回文本内容；按状态码分类错误。"""
+        """发起一次 chat/completions 请求并返回文本内容；按状态码分类错误。
+
+        传输层异常（读超时、连接重置、网络不可达）必须在这里收成
+        `ProviderTransportError`。裸抛 httpx 异常会一路逃出 HTTP 请求处理器
+        （面板只 catch `ProviderError`），连接被断开且写不出任何响应，
+        插件侧只能看到 `fetch failed`，于是界面上报的是「无法连接引擎」——
+        把「模型慢/超时」误报成「引擎挂了」，排查方向会被带偏很远。
+        """
 
         def _request() -> str:
-            response = self._client.post(
-                f"{self.base_url}/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
-            )
+            try:
+                response = self._client.post(
+                    f"{self.base_url}/chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.2,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+            except httpx.TimeoutException as exc:
+                # 一章几千字、推理模型还要先思考，读超时是最常见的失败。
+                # 报出实际超时值与模型名，否则用户只会看到「timed out」。
+                raise ProviderTransportError(
+                    f"模型响应超时（{self.model}，超过 {self._timeout_seconds:g} 秒）。"
+                    "长章节可以调大 NOVEL_DECON_TIMEOUT 后重试"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ProviderTransportError(
+                    f"连不上模型端点（{self.base_url}）：{type(exc).__name__}: {exc}"
+                ) from exc
             if response.status_code >= 400:
                 retryable = response.status_code in _RETRYABLE_STATUS
                 if retryable:

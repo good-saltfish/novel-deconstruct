@@ -10,8 +10,9 @@ from ndecon.providers.errors import (
     ProviderHTTPError,
     ProviderResponseError,
     ProviderSchemaError,
+    ProviderTransportError,
 )
-from ndecon.providers.openai_compat import OpenAICompatProvider
+from ndecon.providers.openai_compat import OpenAICompatProvider, _resolve_timeout
 
 CHAPTER = (
     "第1章 雨夜归人\n"
@@ -187,3 +188,66 @@ def test_golden_report_never_accepts_takeaways() -> None:
     assert report.opening_hook_quote
     assert report.cliffhanger_quote == ""
     assert provider.diagnostics.empty_optional_quotes == 1
+
+
+def test_read_timeout_becomes_transport_error() -> None:
+    """读超时必须归类成 ProviderTransportError，而不是裸抛 httpx 异常。
+
+    这是真实故障的回归测试：裸抛 ReadTimeout 会逃出面板的 HTTP 处理器
+    （它只 catch ProviderError），连接断开且写不出响应，插件侧只能看到
+    `fetch failed`，界面上报成「无法连接引擎」——把模型超时误报成引擎挂了。
+    """
+
+    def _timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    provider, seen = _make_provider(_timeout)
+    with pytest.raises(ProviderTransportError) as exc:
+        provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
+    # 文案要能定位：模型名 + 实际秒数 + 怎么调大
+    assert "test-model" in str(exc.value)
+    assert "60" in str(exc.value)
+    assert "NOVEL_DECON_TIMEOUT" in str(exc.value)
+    # 传输失败默认重试，所以打满了 max_attempts（默认 4）
+    assert exc.value.retryable is True
+    assert len(seen) == 4
+
+
+def test_connect_error_becomes_transport_error() -> None:
+    """连不上端点同样归类为传输错误，并带上端点地址便于排查。"""
+
+    def _refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    provider, _ = _make_provider(_refused)
+    with pytest.raises(ProviderTransportError) as exc:
+        provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
+    assert "https://api.test/v1" in str(exc.value)
+
+
+def test_timeout_resolution_prefers_explicit_then_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """超时值优先级：显式参数 > NOVEL_DECON_TIMEOUT > 默认 60 秒；非法环境变量回退默认。"""
+    monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "180")
+    assert _resolve_timeout(None) == 180.0
+    assert _resolve_timeout(45.0) == 45.0
+    monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "abc")
+    assert _resolve_timeout(None) == 60.0
+    monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "-5")
+    assert _resolve_timeout(None) == 60.0
+    monkeypatch.delenv("NOVEL_DECON_TIMEOUT", raising=False)
+    assert _resolve_timeout(None) == 60.0
+
+
+def test_provider_records_effective_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider 必须记住实际生效的超时值，错误文案才能写出真实秒数。"""
+    monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "240")
+    provider = OpenAICompatProvider(
+        api_key="test-key",
+        base_url="https://api.test/v1",
+        model="test-model",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={})),
+    )
+    assert provider._timeout_seconds == 240.0
+
