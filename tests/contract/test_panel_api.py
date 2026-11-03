@@ -438,3 +438,32 @@ def test_chapter_restore_version(server) -> None:
     assert status == 404
 
 
+def test_uncaught_error_becomes_json_500_instead_of_dropped_connection(
+    server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """处理器里的未捕获异常必须转成 JSON 500，不能断开连接。
+
+    历史故障：异常逃出处理器后 stdlib 直接断连接，插件侧只看到 etch failed，
+    界面把「某个请求失败」报成「无法连接引擎」。这条断言锁住那道兜底。
+    """
+    from ndecon.panel import server as panel_server
+
+    original = panel_server.create_handler
+    real_handler = original(server.workspace_store, server.llm_session)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("模拟未捕获异常")
+
+    # 把 _list_runs 换成必炸的实现，走真实 HTTP 路径
+    class Boom(real_handler):
+        """覆写一个路由方法，模拟业务层没接住的异常。"""
+
+        def _list_runs(self, *_args, **_kwargs):
+            explode()
+
+    server.RequestHandlerClass = Boom
+
+    status, body = api_request(server, "GET", "/api/projects/whatever/runs")
+    assert status == 500, body
+    assert "error" in body
+    assert "模拟未捕获异常" in body["error"]

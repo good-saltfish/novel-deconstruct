@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -159,9 +161,48 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             """返回统一错误结构。"""
             self._send_json(status, {"error": message})
 
+        def _dispatch(self, handler) -> None:
+            """执行一次请求处理；任何未捕获异常都转成 JSON 500，绝不断开连接。
+
+            为什么必须有这一层：面板是插件的子进程，插件用 fetch 打它。
+            处理器里一旦有异常逃出去（历史案例：httpx.ReadTimeout 不是
+            ProviderError，业务层没接住），stdlib 只会打印 traceback 并断开
+            连接，客户端拿到的是 `fetch failed`，界面上显示「无法连接引擎」。
+            用户会去查引擎为什么崩，而真相是某个业务异常没被分类。
+            兜底这一层让「引擎连不上」与「这个请求失败了」变成两件不同的事。
+            """
+            try:
+                handler()
+            except Exception as exc:  # noqa: BLE001 - 兜底必须吞掉一切，否则断连接
+                traceback.print_exc()
+                message = f"{type(exc).__name__}: {exc}"
+                # 响应可能已经开始写（客户端已收到 header），此时不能再改状态码
+                with contextlib.suppress(Exception):
+                    self._error(500, f"服务端内部错误：{message}")
+
+        def do_GET(self) -> None:  # noqa: N802
+            """GET 入口：交给 _dispatch 兜住所有异常。"""
+            self._dispatch(self._route_GET)
+
+        def do_POST(self) -> None:  # noqa: N802
+            """POST 入口：交给 _dispatch 兜住所有异常。"""
+            self._dispatch(self._route_POST)
+
+        def do_PUT(self) -> None:  # noqa: N802
+            """PUT 入口：交给 _dispatch 兜住所有异常。"""
+            self._dispatch(self._route_PUT)
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            """PATCH 入口：交给 _dispatch 兜住所有异常。"""
+            self._dispatch(self._route_PATCH)
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            """DELETE 入口：交给 _dispatch 兜住所有异常。"""
+            self._dispatch(self._route_DELETE)
+
         # ---- 路由 ----
 
-        def do_GET(self) -> None:  # noqa: N802 (stdlib 命名)
+        def _route_GET(self) -> None:
             """处理 GET：静态资源与查询类 API。"""
             parsed = urlparse(self.path)
             path = unquote(parsed.path)
@@ -194,7 +235,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 return
             self._serve_static(path)
 
-        def do_POST(self) -> None:  # noqa: N802
+        def _route_POST(self) -> None:
             """处理 POST：导入参考书、新建创作项目、生成骨架。"""
             path = unquote(urlparse(self.path).path)
             try:
@@ -239,7 +280,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             else:
                 self._error(404, "未知接口")
 
-        def do_PUT(self) -> None:  # noqa: N802
+        def _route_PUT(self) -> None:
             """处理 PUT：保存 LLM 配置、骨架部件或编辑章节正文。"""
             path = unquote(urlparse(self.path).path)
             parts = path.strip("/").split("/")
@@ -282,7 +323,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             else:
                 self._error(404, "未知接口")
 
-        def do_PATCH(self) -> None:  # noqa: N802
+        def _route_PATCH(self) -> None:
             """处理 PATCH：更新创作项目的基础设定（题材/一句话设定/参考书）。"""
             path = unquote(urlparse(self.path).path)
             parts = path.strip("/").split("/")
@@ -291,7 +332,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             else:
                 self._error(404, "未知接口")
 
-        def do_DELETE(self) -> None:  # noqa: N802
+        def _route_DELETE(self) -> None:
             """处理 DELETE：删除项目。"""
             path = unquote(urlparse(self.path).path)
             if path.startswith("/api/projects/"):
