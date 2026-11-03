@@ -477,9 +477,16 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 part for part in (project.meta.title, project.genre, project.premise) if part
             )
             knowledge = [snippet.model_dump() for snippet in search_knowledge(store.root, knowledge_query)]
-            project.draft = creator.generate_draft(
-                project.meta.title, project.genre, project.premise, stats, knowledge
-            )
+            try:
+                project.draft = creator.generate_draft(
+                    project.meta.title, project.genre, project.premise, stats, knowledge
+                )
+            except ProviderError as exc:
+                # 骨架生成失败是业务结果，不是服务端故障：模型少给一块、JSON 被截断、
+                # 端点超时，用户能做的事（换模型 / 重试 / 调小章数）各不相同，
+                # 所以必须给出可读原因，而不是落到 500「服务端内部错误」。
+                self._error(422, f"骨架生成失败：{exc}")
+                return
             project.confirmed_parts = {}  # 新候选生成后重置确认标记
             store.save_creation(project)
             self._send_json(200, project.model_dump())

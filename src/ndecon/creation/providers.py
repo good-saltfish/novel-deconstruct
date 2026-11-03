@@ -39,18 +39,38 @@ class Creator(Protocol):
         ...
 
 
+PART_LABELS = {
+    "positioning": "定位",
+    "volume": "卷纲",
+    "protagonist": "主角",
+    "golden_finger": "金手指",
+}
+
+
 def _draft_from_dict(data: dict, model_id: str, prompt_version: str) -> CreationDraft:
     """把模型 JSON 严格转换为 CreationDraft；章节必须从 1 起连续递增。
 
     任一部件字段不合法直接抛错（pydantic ValidationError 上抛），
     防止半成品骨架写入工作区。
+
+    缺部件必须报「缺哪一块」，不能把 `KeyError: 'protagonist'` 直接抛给用户：
+    那句话只说明字典里没这个键，既不告诉人缺的是什么，也看不出该重试还是换模型。
     """
+    if not isinstance(data, dict):
+        raise ValueError(f"模型返回的不是 JSON 对象，而是 {type(data).__name__}")
     chapters = [ChapterOutline(**item) for item in data.get("chapters", [])]
     orders = [c.order for c in chapters]
     if not chapters:
         raise ValueError("细纲至少需要 1 章")
     if orders != list(range(1, len(chapters) + 1)):
         raise ValueError(f"细纲章号必须从 1 起连续递增，实际：{orders}")
+    missing = [
+        f"{part}（{PART_LABELS[part]}）"
+        for part in ("positioning", "volume", "protagonist", "golden_finger")
+        if not isinstance(data.get(part), dict)
+    ]
+    if missing:
+        raise ValueError(f"缺少部件：{'、'.join(missing)}")
     draft = CreationDraft(
         positioning=Positioning(**data["positioning"]),
         volume=VolumeOutline(**data["volume"]),

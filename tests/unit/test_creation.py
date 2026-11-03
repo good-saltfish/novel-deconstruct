@@ -83,6 +83,46 @@ def test_draft_from_dict_accepts_many_chapters() -> None:
     assert draft.chapters[-1].order == 50
 
 
+def test_draft_from_dict_reports_missing_part_by_name() -> None:
+    """缺部件必须报「缺哪一块」，而不是把 KeyError: 'protagonist' 抛给用户。
+
+    用户看到 `创作骨架 JSON 不合法：'protagonist'` 时无法判断这是模型少给了一块、
+    还是字段名拼错、还是该换模型——错必须说人话。
+    """
+    from ndecon.creation.providers import _draft_from_dict
+
+    base = {
+        "positioning": {"genre": "末世"},
+        "volume": {"volume_title": "首卷"},
+        "chapters": [
+            {"order": 1, "title": "一", "core_event": "", "opening_hook": "", "ending_hook": ""}
+        ],
+        "golden_finger": {"name": "金手指", "cost_limitation": "有代价"},
+    }
+    try:
+        _draft_from_dict(base, model_id="x", prompt_version="v")
+    except ValueError as exc:
+        message = str(exc)
+        assert "缺少部件" in message
+        assert "protagonist" in message
+        assert "主角" in message
+        return
+    raise AssertionError("缺少 protagonist 时应当拒绝")
+
+
+def test_draft_from_dict_reports_non_object() -> None:
+    """模型返回数组/字符串时也要说清楚，而不是抛出 TypeError: list indices must be integers。"""
+    from ndecon.creation.providers import _draft_from_dict
+
+    try:
+        _draft_from_dict([], model_id="x", prompt_version="v")  # type: ignore[arg-type]
+    except ValueError as exc:
+        assert "不是 JSON 对象" in str(exc)
+        assert "list" in str(exc)
+        return
+    raise AssertionError("非对象输入应当被拒绝")
+
+
 def test_fake_creator_respects_chapter_count() -> None:
     """FakeCreator 可指定章数，长跑演练需要 50 章以上的骨架。"""
     draft = FakeCreator(chapter_count=50).generate_draft("长跑", "末世", "设定", [])

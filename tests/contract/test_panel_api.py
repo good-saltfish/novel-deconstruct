@@ -438,6 +438,30 @@ def test_chapter_restore_version(server) -> None:
     assert status == 404
 
 
+def test_generate_reports_provider_failure_as_422(server, monkeypatch) -> None:
+    """模型少给一块骨架时必须回 422 + 可读原因，而不是 500「服务端内部错误」。
+
+    真实故障：模型返回的 JSON 里没有 protagonist，`_draft_from_dict` 抛
+    ProviderResponseError，`_generate` 原来没有 try/except，于是落到 _dispatch
+    的 500 兜底，用户看到的是「服务端内部错误：ProviderResponseError: 创作骨架
+    JSON 不合法：'protagonist'」——既不知道缺哪一块，也不知道该怎么办。
+    """
+    from ndecon.creation import providers as providers_module
+
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "缺部件书"})
+    cre_id = cre["meta"]["id"]
+
+    def boom(self, *_args, **_kwargs):
+        """替身：模拟模型少给 protagonist 的响应。"""
+        raise providers_module.ProviderResponseError("创作骨架 JSON 不合法：缺少部件：protagonist（主角）")
+
+    monkeypatch.setattr(providers_module.FakeCreator, "generate_draft", boom)
+    status, body = api_request(server, "POST", f"/api/projects/{cre_id}/generate", {"provider": "fake"})
+    assert status == 422, body
+    assert "骨架生成失败" in body["error"]
+    assert "protagonist" in body["error"]
+
+
 def test_uncaught_error_becomes_json_500_instead_of_dropped_connection(
     server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
