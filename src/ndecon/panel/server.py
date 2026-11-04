@@ -69,6 +69,9 @@ from ndecon.workspace.models import (
 )
 from ndecon.workspace.store import WorkspaceStore, new_project_id
 
+# 汉字计数：台账要回答「这一章多少字」，老 run 记录缺字段时得从正文现算。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
 # Planner Agent 合法任务（契约测试据此给出可读报错）
 _VALID_AGENT_TASKS = ("expand_chapter", "add_settings")
 
@@ -1062,7 +1065,10 @@ un_server 传 server.jobs），不能在这里新建：
                             "status": record.get("status"),
                             "verdict": record.get("gate_verdict"),
                             "attempts": record.get("attempts"),
-                            "cjk_chars": record.get("cjk_chars"),
+                            # 老 run 记录（修复前写的）没有 cjk_chars 字段。
+                            # 不能显示空白：正文还在 manuscripts/ 里，现算一遍即可。
+                            "cjk_chars": record.get("cjk_chars")
+                            or self._cjk_of_manuscript(project_id, record.get("order")),
                             "summary_source": record.get("summary_source") or "",
                             "hard_failures": record.get("gate_failures") or [],
                             "hard_failure_details": record.get("gate_details") or [],
@@ -1072,6 +1078,22 @@ un_server 传 server.jobs），不能在这里新建：
                     ],
                 })
             self._send_json(200, {"runs": runs})
+
+        def _cjk_of_manuscript(self, project_id: str, order: object) -> int:
+            """从已落盘正文现算汉字数（老 run 记录缺 cjk_chars 时兜底）。
+
+            台账要回答「这一章多少字」，历史记录里没有这个字段不代表没写过正文。
+            读不到正文就返回 0，不抛异常——台账不该因为一章文件缺失整体失败。
+            """
+            if not isinstance(order, int):
+                return 0
+            try:
+                content = store.read_manuscript(project_id, order)
+            except (OSError, ValueError):
+                return 0
+            if not content:
+                return 0
+            return len(_CJK_RE.findall(content))
 
         def _generate_chapter(self, project_id: str, order_text: str, payload: dict) -> None:
             """基于 ContextPack 生成一章正文候选与结构化自评（fake 离线/openai-compat）。"""
