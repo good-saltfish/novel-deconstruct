@@ -42,6 +42,10 @@ class ChapterRun(BaseModel):
     output_hash: str = Field(default="", description="正文 SHA-256 前缀")
     gate_verdict: GateVerdict = Field(default="pass")
     gate_failures: list[str] = Field(default_factory=list, description="硬门失败规则标识")
+    gate_details: list[str] = Field(
+        default_factory=list,
+        description="硬门失败的可读说明（含实测值），与 gate_failures 同序",
+    )
     soft_scores: dict[str, float] = Field(default_factory=dict)
     attempts: int = Field(default=1, ge=1, description="本章累计尝试次数")
     summary_present: bool = Field(default=False, description="是否产出结构化摘要")

@@ -1051,6 +1051,9 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                             "verdict": record.get("gate_verdict"),
                             "attempts": record.get("attempts"),
                             "cjk_chars": record.get("cjk_chars"),
+                            "hard_failures": record.get("gate_failures") or [],
+                            "hard_failure_details": record.get("gate_details") or [],
+                            "error": record.get("error") or "",
                         }
                         for record in records
                     ],
@@ -1249,6 +1252,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 "cjk_chars": outcome.cjk_chars,
                 "summary_present": outcome.summary_present,
                 "hard_failures": outcome.hard_failures,
+                "hard_failure_details": outcome.hard_failure_details,
                 "sample_quotes": outcome.sample_quotes,
                 "error": outcome.error,
                 "run_id": outcome.run_id,
@@ -1341,6 +1345,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                     "cjk_chars": outcome.cjk_chars,
                     "summary_present": outcome.summary_present,
                     "hard_failures": outcome.hard_failures,
+                    "hard_failure_details": outcome.hard_failure_details,
                     "error": outcome.error,
                 })
                 if outcome.committed:

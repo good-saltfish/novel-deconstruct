@@ -53,6 +53,8 @@ class ChapterOutcome:
     cjk_chars: int = 0
     summary_present: bool = False
     hard_failures: list[str] = field(default_factory=list)
+    # 与 hard_failures 同序的可读说明（含实测值），例："偏短：实测 1200 字，目标 2600 字"
+    hard_failure_details: list[str] = field(default_factory=list)
     sample_quotes: list[str] = field(default_factory=list)
     cost_tokens: int = 0
     error: str = ""
@@ -196,6 +198,10 @@ def run_chapter(
         # 不能因为"这次放弃"就改写成 reject——那是两种不同的事故。
         record.gate_verdict = report.verdict if report else "reject"
         record.gate_failures = [f.rule for f in (report.hard_failures if report else [])]
+        # 只记规则名等于没记：用户看到「第 1 章 repair」既不知道差多少字，
+        # 也不知道该换模型还是改细纲。detail 里带着实测值（"实测 1200 字，
+        # 目标 2600 字"），这才是能指导下一步的证据。
+        record.gate_details = [f.detail for f in (report.hard_failures if report else [])]
         record.error = error or "超过修复重试上限"
         record.output_hash = content_hash(content) if content else ""
         run.write(record)
@@ -206,6 +212,7 @@ def run_chapter(
             attempts=attempt,
             cjk_chars=report.cjk_chars if report else 0,
             hard_failures=record.gate_failures,
+            hard_failure_details=record.gate_details,
             sample_quotes=report.sample_quotes if report else [],
             error=record.error,
             run_id=run.run_id,

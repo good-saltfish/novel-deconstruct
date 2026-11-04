@@ -276,6 +276,10 @@ def test_run_chapter_retries_with_evidence_then_degrades(tmp_path, monkeypatch) 
     assert outcome.attempts == 2  # 1 次首写 + 1 次修复
     assert writer.calls == 2
     assert any(rule == "chapter_length" for rule in outcome.hard_failures)
+    # 只记规则名等于没记：必须带实测字数，否则用户看到「第 1 章 repair」
+    # 既不知道差多少，也不知道该换模型还是调目标字数。
+    assert outcome.hard_failure_details, "硬门失败必须带可读说明"
+    assert any("实测" in detail and "2600" in detail for detail in outcome.hard_failure_details)
 
 
 def test_repair_feedback_lands_in_prompt() -> None:
