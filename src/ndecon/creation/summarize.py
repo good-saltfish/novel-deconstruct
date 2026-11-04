@@ -74,3 +74,47 @@ def summarize_chapter(
         return provider.summarize_chapter(order, title, chapter_text, digest)  # type: ignore[attr-defined]
     except ProviderError:
         return None
+
+
+def mechanical_summary(
+    order: int,
+    title: str,
+    chapter_text: str,
+    *,
+    core_event: str = "",
+) -> ChapterSummary:
+    """摘要的机械兜底：不调模型，直接从正文与细纲拼一个最低限度摘要。
+
+    为什么必须有这个兜底：摘要不是"附带的元数据"，它是 ``build_context_pack``
+    里 ``previous_summary`` 的唯一来源 —— 也就是模型"记得上一章发生了什么"的
+    唯一通道。实测一次 10 章连写里模型摘要失败了 5 章（ch001/ch006/ch007/
+    ch008/ch009），那 5 章仍被标成 committed，于是后续章节的上下文包直接断档，
+    模型开始遗忘前情，而闸门完全不检查这一项。
+
+    原来"失败就返回 None、正文照常提交"这个判断是错的：它让遗忘静默发生。
+    现在的策略是三层 —— 模型摘要成功最好；失败则用这里的机械摘要保证连续性；
+    连机械摘要都拿不到（正文为空）才真的缺。
+
+    机械摘要不含 plot_points（没有证据定位就不能伪造证据），gist 取"细纲核心
+    事件 + 正文结尾一句"，足够让下一章知道"上一章写到哪了"。
+    """
+    text = chapter_text.strip()
+    # 结尾一句：优先取最后一个非空行，截到 80 字。它是"上一章停在哪"的最直接线索。
+    tail = ""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if line:
+            tail = line[:80]
+            break
+    pieces = [part for part in (core_event.strip(), tail) if part]
+    gist = "；".join(pieces)[:200] if pieces else f"第 {order} 章 {title}"
+    return ChapterSummary(
+        model_id="rule:mechanical-summary",
+        prompt_version="ms-v1",
+        chapter_id=f"CH{order:04d}",
+        order=order,
+        title=title,
+        gist=gist,
+        plot_points=[],
+        characters=[],
+    )

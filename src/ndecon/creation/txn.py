@@ -29,7 +29,7 @@ from pathlib import Path
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.models import ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
-from ndecon.creation.summarize import content_hash, summarize_chapter
+from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, GateReport, check_chapter
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import ChapterSummary, CreationProject
@@ -52,6 +52,9 @@ class ChapterOutcome:
     attempts: int = 0
     cjk_chars: int = 0
     summary_present: bool = False
+    # model / mechanical：机械摘要不调模型，是从正文与细纲拼出来的兜底。
+    # 界面据此区分"模型真读过这一章"和"只是没断档"。
+    summary_source: str = ""
     hard_failures: list[str] = field(default_factory=list)
     # 与 hard_failures 同序的可读说明（含实测值），例："偏短：实测 1200 字，目标 2600 字"
     hard_failure_details: list[str] = field(default_factory=list)
@@ -194,6 +197,7 @@ def run_chapter(
         record.attempts = attempt
         record.status = "rolled_back" if not error else "failed"
         record.ended_at = now_iso()
+        record.cjk_chars = report.cjk_chars if report else 0
         # 如实记录闸门给出的判定：repair 耗尽仍是 repair（可修但没修好），
         # 不能因为"这次放弃"就改写成 reject——那是两种不同的事故。
         record.gate_verdict = report.verdict if report else "reject"
@@ -218,10 +222,26 @@ def run_chapter(
             run_id=run.run_id,
         )
 
-    # 3) 摘要：失败只影响 summary_present，不阻止正文提交
+    # 3) 摘要：模型摘要失败就退到机械摘要，绝不让连续性断档
+    #
+    # 原实现是"失败就返回 None，正文照常提交，只在 run 记录里标
+    # summary_present=False"。实测一次 10 章连写里这样缺了 5 章摘要，而摘要
+    # 是 previous_summary 的唯一来源 —— 缺了就等于模型忘了那几章，闸门却完全
+    # 不检查。现在退到机械摘要（不调模型，直接从细纲核心事件 + 正文结尾拼），
+    # 保证下一章至少知道"上一章写到哪"。
     digest = content_hash(content)
     summary = summarize_chapter(writer, order, target.title, content, chapter_hash=digest)
-    summary_present = summary is not None
+    if summary is not None:
+        summary_source = "model"
+    else:
+        summary = mechanical_summary(
+            order,
+            target.title,
+            content,
+            core_event=getattr(target, "core_event", "") or "",
+        )
+        summary_source = "mechanical"
+    summary_present = True
 
     # 4) 提交：正文 + 摘要 + project.json 一起落，失败则回滚正文
     previous = store.read_manuscript(project.meta.id, order)
@@ -267,7 +287,9 @@ def run_chapter(
     record.output_hash = digest
     record.gate_verdict = report.verdict
     record.soft_scores = report.soft_scores
+    record.cjk_chars = report.cjk_chars
     record.summary_present = summary_present
+    record.summary_source = summary_source
     record.status = "committed"
     record.ended_at = now_iso()
     run.write(record)
@@ -278,5 +300,6 @@ def run_chapter(
         attempts=attempt,
         cjk_chars=report.cjk_chars,
         summary_present=summary_present,
+        summary_source=summary_source,
         run_id=run.run_id,
     )

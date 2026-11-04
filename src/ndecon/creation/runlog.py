@@ -48,7 +48,14 @@ class ChapterRun(BaseModel):
     )
     soft_scores: dict[str, float] = Field(default_factory=dict)
     attempts: int = Field(default=1, ge=1, description="本章累计尝试次数")
+    # 实测汉字数：必须落盘。面板台账读的就是这个字段，缺了它「每章多少字」
+    # 永远显示空白 —— 而字数是最直观的质量信号，用户据此判断该不该换模型。
+    cjk_chars: int = Field(default=0, ge=0, description="本章正文的实测汉字数")
     summary_present: bool = Field(default=False, description="是否产出结构化摘要")
+    summary_source: str = Field(
+        default="",
+        description="model=模型读过；mechanical=机械兜底（不调模型，只保证不断档）",
+    )
     cost_tokens: int = Field(default=0, ge=0, description="本次消耗 token 估算")
     status: RunStatus = Field(default="in_progress")
     started_at: str = Field(default="")

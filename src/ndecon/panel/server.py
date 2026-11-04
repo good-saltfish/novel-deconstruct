@@ -24,6 +24,7 @@ from ndecon.agent.planners import FakePlanner, OpenAICompatPlanner
 from ndecon.agent.runner import run_planner
 from ndecon.creation import plans as creation_plans
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
+from ndecon.creation.jobs import JobRegistry, job_status
 from ndecon.creation.models import (
     CHAPTER_ORDER_MAX,
     Beat,
@@ -44,7 +45,6 @@ from ndecon.creation.plan_providers import (
     PlanError,
 )
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
-from ndecon.creation.runlog import new_run_id
 from ndecon.creation.summarize import content_hash, summarize_chapter
 from ndecon.creation.txn import MAX_REPAIR_ATTEMPTS, run_chapter
 from ndecon.domain.models import ChapterSummary
@@ -129,8 +129,18 @@ def _reference_stats(store: WorkspaceStore, reference_ids: list[str]) -> list[di
     return stats
 
 
-def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseHTTPRequestHandler]:
-    """生成绑定特定工作区与 LLM 会话的请求处理器类。"""
+def create_handler(
+    store: WorkspaceStore,
+    llm_session: LLMSession,
+    jobs: JobRegistry | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    """生成绑定特定工作区、LLM 会话与连写任务表的请求处理器类。
+
+    jobs 必须由调用方传入（
+un_server 传 server.jobs），不能在这里新建：
+    连写任务的状态要跨请求存活，每次 new 一个就等于每次查询都是新任务表。
+    """
+    job_registry = jobs if jobs is not None else JobRegistry()
 
     class PanelHandler(BaseHTTPRequestHandler):
         """面板 HTTP 处理器：JSON API 与静态资源。"""
@@ -228,6 +238,8 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                     self._list_chapter_versions(parts[2], parts[4])
                 elif len(parts) == 5 and parts[3] == "chapters":
                     self._get_chapter(parts[2], parts[4])
+                elif len(parts) == 5 and parts[3] == "runs":
+                    self._get_batch_job(parts[2], parts[4])
                 elif len(parts) == 4 and parts[3] == "runs":
                     self._list_runs(parts[2])
                 else:
@@ -1051,6 +1063,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                             "verdict": record.get("gate_verdict"),
                             "attempts": record.get("attempts"),
                             "cjk_chars": record.get("cjk_chars"),
+                            "summary_source": record.get("summary_source") or "",
                             "hard_failures": record.get("gate_failures") or [],
                             "hard_failure_details": record.get("gate_details") or [],
                             "error": record.get("error") or "",
@@ -1251,6 +1264,7 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 "attempts": outcome.attempts,
                 "cjk_chars": outcome.cjk_chars,
                 "summary_present": outcome.summary_present,
+                "summary_source": outcome.summary_source,
                 "hard_failures": outcome.hard_failures,
                 "hard_failure_details": outcome.hard_failure_details,
                 "sample_quotes": outcome.sample_quotes,
@@ -1261,10 +1275,19 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
             self._send_json(200 if outcome.committed else 409, body)
 
         def _run_chapters_txn(self, project_id: str, payload: dict) -> None:
-            """连写多章：逐章跑事务，进度落 project.cursor，默认遇失败即停。
+            """连写多章：**立刻返回 run_id**，后台线程逐章跑。
 
-            与 CLI `ndecon run` 同一实现（都调 run_chapter），只是出口不同。
-            每章重新读项目：上一章的游标与摘要必须对本轮可见，否则会重复写已提交章。
+            为什么必须异步（实测事故）：同步版本跑 10 章要 373 秒，而插件侧
+            对引擎有 300 秒硬超时。于是插件在第 300 秒放弃连接，引擎在第 373
+            秒把 10 章全部写完，回写响应时撞 `ConnectionAbortedError`。
+            用户看到「引擎 300s 内没有响应」，以为全失败，实际全成功 ——
+            这类「活儿干完了但用户看到失败」比真失败更糟。
+
+            现在：立刻回 202 + run_id，进度由 `GET /runs/<run_id>` 轮询。
+            进度以磁盘 run 记录为准，所以引擎被杀重启后仍能查。
+
+            单章 `POST /chapters/<n>/run` 保持同步：它本来就在 300 秒内，
+            同步返回让「点一下写一章」有确定结果，不需要轮询。
             """
             try:
                 project = store.get(project_id)
@@ -1315,55 +1338,47 @@ def create_handler(store: WorkspaceStore, llm_session: LLMSession) -> type[BaseH
                 self._error(400, f"章号区间不合法：{first}-{last}（细纲共 {total} 章）")
                 return
 
-            run_id = str(payload.get("run_id", "")).strip() or new_run_id()
-            chapters: list[dict] = []
-            written = 0
-            failures = 0
-            for order in range(first, last + 1):
-                fresh = store.get(project_id)
-                if not isinstance(fresh, CreationProject):
-                    break
-                try:
-                    outcome = run_chapter(
-                        store,
-                        fresh,
-                        order,
-                        provider=name,
-                        provider_obj=provider_obj,
-                        run_id=run_id,
-                        auto_accept=auto_accept,
-                        max_repairs=max_repairs,
-                    )
-                except ValueError as exc:
-                    self._error(400, str(exc))
-                    return
-                chapters.append({
-                    "order": outcome.order,
-                    "status": outcome.status,
-                    "verdict": outcome.verdict,
-                    "attempts": outcome.attempts,
-                    "cjk_chars": outcome.cjk_chars,
-                    "summary_present": outcome.summary_present,
-                    "hard_failures": outcome.hard_failures,
-                    "hard_failure_details": outcome.hard_failure_details,
-                    "error": outcome.error,
+            # 同一项目同时只允许一个连写：两个线程同时写 project.json 会互相覆盖，
+            # 表现为「跑完发现少了几章」或「游标跳回」。
+            running = job_registry.running_for(project_id)
+            if running is not None:
+                self._send_json(409, {
+                    "error": f"这个项目已经有一次连写在跑（{running.run_id}，第 {running.first}-{running.last} 章）",
+                    "run_id": running.run_id,
                 })
-                if outcome.committed:
-                    written += 1
-                else:
-                    failures += 1
-                    # 连续失败通常是系统性问题（provider/提示词/设定崩了），
-                    # 硬写下去只会把整本写坏，所以默认停下。
-                    break
+                return
 
-            self._send_json(200, {
-                "run_id": run_id,
-                "from": first,
-                "to": last,
-                "written": written,
-                "failures": failures,
-                "chapters": chapters,
+            job = job_registry.start(
+                store,
+                project,
+                first=first,
+                last=last,
+                provider=name,
+                provider_obj=provider_obj,
+                auto_accept=auto_accept,
+                max_repairs=max_repairs,
+                run_id=payload.get("run_id"),
+            )
+            # 202 而不是 200：请求被接受，但活儿还没干完。用 200 会让调用方
+            # 以为 `written` 就是最终结果。
+            self._send_json(202, {
+                "run_id": job.run_id,
+                "status": job.state,
+                "from": job.first,
+                "to": job.last,
+                "total": job.total,
+                "poll": f"/api/projects/{project_id}/runs/{job.run_id}",
             })
+
+        def _get_batch_job(self, project_id: str, run_id: str) -> None:
+            """轮询一次连写任务进度。"""
+            try:
+                store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            job = job_registry.get(run_id)
+            self._send_json(200, job_status(store, project_id, run_id, job))
 
         def _restore_chapter_version(self, project_id: str, order_text: str, payload: dict) -> None:
             """把某章回退到历史版本；当前正文会先被存档，回退本身可撤销。"""
@@ -1423,9 +1438,11 @@ def run_server(
     """构建并返回面板服务器（已 listen，未 serve_forever；便于测试与 CLI 复用）。"""
     store = WorkspaceStore(workspace)
     llm_session = LLMSession()
-    server = ThreadingHTTPServer((host, port), create_handler(store, llm_session))
+    jobs = JobRegistry()
+    server = ThreadingHTTPServer((host, port), create_handler(store, llm_session, jobs))
     server.workspace_store = store  # type: ignore[attr-defined]
     server.llm_session = llm_session  # type: ignore[attr-defined]
+    server.jobs = jobs  # type: ignore[attr-defined]
     return server
 
 

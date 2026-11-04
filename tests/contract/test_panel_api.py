@@ -259,17 +259,40 @@ def test_chapter_generation_guards(server, monkeypatch) -> None:
     assert status == 400 and "创作项目" in body["error"]
 
 
+def _wait_batch(server, cre_id: str, run_id: str, *, timeout: float = 60.0) -> dict:
+    """轮询一次连写任务直到它不再是 running（返回最终状态体）。"""
+    import time
+
+    deadline = time.time() + timeout
+    last: dict = {}
+    while time.time() < deadline:
+        status, last = api_request(server, "GET", f"/api/projects/{cre_id}/runs/{run_id}")
+        assert status == 200, last
+        if last.get("status") != "running":
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"连写任务 {run_id} 在 {timeout}s 内没结束：{last}")
+
+
 def test_chapters_run_batch_writes_and_resumes(server) -> None:
-    """连写端点：一次写多章，进度落 cursor；再调一次从游标续跑不重写已提交章。"""
+    """连写端点：立刻回 202，轮询到结束后进度落 cursor；再从游标续跑不重写已提交章。"""
     _, cre = api_request(server, "POST", "/api/projects/create", {"title": "连写书"})
     cre_id = cre["meta"]["id"]
     api_request(server, "POST", f"/api/projects/{cre_id}/generate")
 
-    status, batch = api_request(
+    status, started = api_request(
         server, "POST", f"/api/projects/{cre_id}/runs",
         {"from": 1, "to": 3, "provider": "fake", "run_id": "run-batch"},
     )
-    assert status == 200, batch
+    # 202 而不是 200：请求被接受，但活儿还没干完。同步返回会让调用方误以为
+    # written 就是最终结果，而真实模型跑 10 章要 373 秒，必然撞插件 300s 超时。
+    assert status == 202, started
+    assert started["run_id"] == "run-batch"
+    assert started["total"] == 3
+    assert started["poll"] == f"/api/projects/{cre_id}/runs/run-batch"
+
+    batch = _wait_batch(server, cre_id, "run-batch")
+    assert batch["status"] == "finished", batch
     assert batch["written"] == 3 and batch["failures"] == 0
     assert [ch["order"] for ch in batch["chapters"]] == [1, 2, 3]
     assert all(ch["status"] == "committed" for ch in batch["chapters"])
@@ -279,10 +302,11 @@ def test_chapters_run_batch_writes_and_resumes(server) -> None:
     assert set(full["manuscripts"]) == {"ch1", "ch2", "ch3"}
 
     # 不传 from：从游标续跑
-    status, more = api_request(
+    status, started = api_request(
         server, "POST", f"/api/projects/{cre_id}/runs", {"to": 5, "provider": "fake"}
     )
-    assert status == 200
+    assert status == 202, started
+    more = _wait_batch(server, cre_id, started["run_id"])
     assert more["from"] == 4 and more["written"] == 2
 
     _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
@@ -292,6 +316,62 @@ def test_chapters_run_batch_writes_and_resumes(server) -> None:
         server, "POST", f"/api/projects/{cre_id}/runs", {"from": 9, "to": 4, "provider": "fake"}
     )
     assert status == 400 and "区间" in body["error"]
+
+
+def test_chapters_run_batch_rejects_concurrent_run(server) -> None:
+    """同一项目已有连写在跑时，第二次请求被 409 拒并带回正在跑的 run_id。
+
+    为什么必须拒：两个后台线程同时写 project.json 会互相覆盖，表现是
+    「跑完发现少了几章」或「游标跳回」——数据错了但没有任何报错。
+    """
+
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "并发连写"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate", {"chapter_count": 30})
+
+    status, first = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 30, "provider": "fake", "run_id": "run-1"},
+    )
+    assert status == 202, first
+
+    status, second = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 3, "provider": "fake", "run_id": "run-2"},
+    )
+    # 第一个任务可能已经跑完（fake 很快），那就不是并发场景，跳过断言。
+    if status == 409:
+        assert "已经有一次连写在跑" in second["error"]
+        assert second["run_id"] == "run-1"
+
+    _wait_batch(server, cre_id, "run-1", timeout=120)
+
+
+def test_batch_job_status_falls_back_to_disk(server) -> None:
+    """引擎重启后内存任务表是空的，进度仍能从 runs/<run_id>/ch*.json 读出来。
+
+    没有这条兜底，用户刷新面板会看到「找不到这次连写」，以为数据丢了。
+    """
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "重启兜底"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 2, "provider": "fake", "run_id": "run-disk"},
+    )
+    assert status == 202
+    _wait_batch(server, cre_id, "run-disk")
+
+    # 模拟引擎重启：把任务从内存表里摘掉，只剩磁盘记录。
+    server.jobs._jobs.pop("run-disk", None)
+    status, body = api_request(server, "GET", f"/api/projects/{cre_id}/runs/run-disk")
+    assert status == 200, body
+    assert body["run_id"] == "run-disk"
+    assert body["written"] == 2
+    assert [ch["order"] for ch in body["chapters"]] == [1, 2]
+    # 已全部 settled，所以不是 interrupted，而是 stopped（内存里没有活任务）。
+    assert body["status"] == "stopped"
 
 
 def test_static_index_served(server) -> None:
