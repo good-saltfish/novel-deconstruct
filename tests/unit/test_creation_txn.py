@@ -172,6 +172,11 @@ def test_gate_verdicts() -> None:
     truncated = check_chapter(good.rstrip("。")[:-1], target_chars=2600)
     assert any(f.rule == "truncated" for f in truncated.hard_failures)
 
+    # 以对话引号收尾是合法的：中文小说整章结尾常是 `他说"我走了。"`，
+    # 漏掉 ASCII 直引号会把这种正常收尾判成「生成被截断」（实测 aliyun 一章 2695 字被误杀）。
+    quoted = check_chapter(good + '\n\n他低声说"我走了。"', target_chars=2600)
+    assert not any(f.rule == "truncated" for f in quoted.hard_failures)
+
     engineering = check_chapter(good + "\n\n本章的细纲要求主角反击。", target_chars=2600)
     assert any(f.rule == "tier1_engineering_words" for f in engineering.hard_failures)
 
