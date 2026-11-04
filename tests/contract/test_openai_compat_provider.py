@@ -204,10 +204,10 @@ def test_read_timeout_becomes_transport_error() -> None:
     provider, seen = _make_provider(_timeout)
     with pytest.raises(ProviderTransportError) as exc:
         provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
-    # 文案要能定位：模型名 + 实际秒数 + 怎么调大
+    # 文案要能定位：模型名 + 实际秒数 + 下一步做什么
     assert "test-model" in str(exc.value)
-    assert "180" in str(exc.value)
-    assert "更快的模型" in str(exc.value)
+    assert "900" in str(exc.value)
+    assert "重启引擎" in str(exc.value)
     # 读超时不重试：默认超时已抬到 180 秒，撞上它说明这条路真的走不通。
     # 重试 4 次只会让用户干等 12 分钟才看到同一个错误（实测用户在第 3 次
     # 重试期间就来问「为什么写了 0 章」）。
@@ -258,16 +258,16 @@ def test_http_error_message_is_human_readable() -> None:
 def test_timeout_resolution_prefers_explicit_then_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """超时值优先级：显式参数 > NOVEL_DECON_TIMEOUT > 默认 180 秒；非法环境变量回退默认。"""
+    """超时值优先级：显式参数 > NOVEL_DECON_TIMEOUT > 默认 900 秒；非法环境变量回退默认。"""
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "180")
     assert _resolve_timeout(None) == 180.0
     assert _resolve_timeout(45.0) == 45.0
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "abc")
-    assert _resolve_timeout(None) == 180.0
+    assert _resolve_timeout(None) == 900.0
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "-5")
-    assert _resolve_timeout(None) == 180.0
+    assert _resolve_timeout(None) == 900.0
     monkeypatch.delenv("NOVEL_DECON_TIMEOUT", raising=False)
-    assert _resolve_timeout(None) == 180.0
+    assert _resolve_timeout(None) == 900.0
 
 
 def test_provider_records_effective_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

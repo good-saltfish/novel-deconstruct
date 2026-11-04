@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,10 +44,12 @@ from ndecon.workspace.models import CreationProject
 from ndecon.workspace.store import WorkspaceStore
 
 # 任务状态：running 在跑；finished 全部跑完；stopped 遇失败提前停；
+# paused 用户手动暂停（停在两章之间，当前章的事务已经提交）；
 # interrupted 内存里没有这个任务但磁盘上有 in_progress 记录（引擎被重启/被杀）。
 JOB_RUNNING = "running"
 JOB_FINISHED = "finished"
 JOB_STOPPED = "stopped"
+JOB_PAUSED = "paused"
 JOB_INTERRUPTED = "interrupted"
 
 
@@ -65,6 +68,7 @@ class BatchJob:
     started_at: str = ""
     ended_at: str = ""
     chapters: list[dict] = field(default_factory=list)
+    pause_requested: bool = False
 
     @property
     def total(self) -> int:
@@ -101,6 +105,28 @@ class JobRegistry:
         """把任务放进表里。"""
         with self._lock:
             self._jobs[job.run_id] = job
+
+    def pause(self, run_id: str) -> BatchJob | None:
+        """请求暂停某个任务；返回任务本身（不存在返回 None）。
+
+        为什么只置标记、不杀线程：一章的事务是原子的（先写 run 记录 → 生成 →
+        过闸门 → 写正文与摘要 → 提交游标）。在生成中途硬掐会留下半截正文，
+        而 `write_manuscript` 是整篇覆盖写 —— 半截正文会把上一版好内容冲掉。
+        所以暂停只能发生在两章之间：这里只举手，后台线程在下一章开始前
+        检查标记并退出循环。
+
+        已经在跑的最后一章不会被打断，用户拿到的是「这一章写完就停」。
+
+        已经跑完/已停下的任务不置标记：否则用户会对一个结束了的任务
+        「暂停成功」，而实际什么也没发生。
+        """
+        with self._lock:
+            job = self._jobs.get(run_id)
+            if job is None:
+                return None
+            if job.state == JOB_RUNNING:
+                job.pause_requested = True
+            return job
 
     def start(
         self,
@@ -149,6 +175,12 @@ class JobRegistry:
         """后台线程主体：逐章跑事务，任何异常都记进任务状态。"""
         try:
             for order in range(job.first, job.last + 1):
+                # 用户点了暂停：只在两章之间停。当前章的事务已经完整提交，
+                # 所以这里退出不会留下半截正文，也不会丢已写好的章。
+                if job.pause_requested:
+                    job.state = JOB_PAUSED
+                    job.error = f"已暂停：第 {job.first}-{order - 1} 章已提交，第 {order}-{job.last} 章未写"
+                    return
                 # 每章重新读项目：上一章的游标与摘要必须对本轮可见，
                 # 否则会重复写已提交章。
                 fresh = store.get(job.project_id)
@@ -193,6 +225,56 @@ class JobRegistry:
             job.state = JOB_STOPPED
         finally:
             job.ended_at = now_iso()
+            # 把终态写进 run 目录：引擎重启后内存任务表是空的，光看 ch*.json
+            # 分不清「用户点了暂停」和「半路崩了」——两者都表现为「写了几章就没了」。
+            _write_job_state(store, job)
+
+
+def _job_state_path(store: WorkspaceStore, project_id: str, run_id: str) -> Path:
+    """任务终态的落盘位置（runs/<run_id>/job.json）。"""
+    return project_dir_for(store, project_id) / "runs" / run_id / "job.json"
+
+
+def _write_job_state(store: WorkspaceStore, job: BatchJob) -> None:
+    """把任务终态写到磁盘；写失败不影响已提交的章节。
+
+    为什么需要它：`runs/<run_id>/ch*.json` 只记录「哪几章跑过」，分不清
+    「用户点了暂停」和「引擎半路崩了」——两者在磁盘上都是「写了几章就没下文」。
+    引擎重启后内存任务表是空的，`job_status` 只能从磁盘推断，那时就只能报
+    「中断」，用户会以为暂停是崩溃。落一份 job.json 才能把结论固定下来。
+    """
+    payload = {
+        "run_id": job.run_id,
+        "project_id": job.project_id,
+        "status": job.state,
+        "from": job.first,
+        "to": job.last,
+        "written": job.written,
+        "failures": job.failures,
+        "error": job.error,
+        "started_at": job.started_at,
+        "ended_at": job.ended_at,
+    }
+    try:
+        path = _job_state_path(store, job.project_id, job.run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def _read_job_state(store: WorkspaceStore, project_id: str, run_id: str) -> dict | None:
+    """读回任务终态；不存在或损坏返回 None。"""
+    path = _job_state_path(store, project_id, run_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJob | None) -> dict:
@@ -214,6 +296,7 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
             "error": job.error,
             "started_at": job.started_at,
             "ended_at": job.ended_at,
+            "pause_requested": job.pause_requested,
         }
 
     # 磁盘推断：任务不在内存里（引擎重启过，或这是上一次会话的 run_id）。
@@ -233,6 +316,7 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
             "error": "找不到这次连写的记录",
             "started_at": "",
             "ended_at": "",
+            "pause_requested": False,
         }
     orders = [rec.order for rec in records]
     written = sum(1 for rec in records if rec.status == "committed")
@@ -242,12 +326,27 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
     # 全部 committed 且没有未结算记录 = 这次连写其实成功了，只是任务对象被回收
     # （引擎重启或内存表清理）。若一律报 stopped，界面会显示「中途停下」，
     # 而用户看到的是 10 章全在 —— 又是一次「活儿干完了但显示失败」。
-    if unsettled:
+    #
+    # 落盘的 job.json 优先：用户主动暂停时，磁盘上同样只有「写了几章就没下文」，
+    # 光靠记录推断会报成 interrupted（崩溃），把用户的正常操作说成故障。
+    saved = _read_job_state(store, project_id, run_id)
+    if isinstance(saved, dict) and saved.get("status") in {
+        JOB_PAUSED,
+        JOB_STOPPED,
+        JOB_FINISHED,
+        JOB_INTERRUPTED,
+    }:
+        state = str(saved.get("status"))
+        saved_error = str(saved.get("error") or "")
+    elif unsettled:
         state = JOB_INTERRUPTED
+        saved_error = ""
     elif failures:
         state = JOB_STOPPED
+        saved_error = ""
     else:
         state = JOB_FINISHED
+        saved_error = ""
     return {
         "run_id": run_id,
         "status": state,
@@ -271,13 +370,15 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
             }
             for rec in records
         ],
-        "error": (
+        "error": saved_error
+        or (
             "引擎重启过，任务已不在内存里；上面的进度是从 run 记录读出来的"
             if unsettled
             else "任务已不在内存里（引擎重启过），进度是从 run 记录读出来的"
         ),
         "started_at": records[0].started_at,
         "ended_at": records[-1].ended_at,
+        "pause_requested": False,
     }
 
 

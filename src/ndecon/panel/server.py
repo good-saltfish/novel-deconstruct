@@ -24,7 +24,7 @@ from ndecon.agent.planners import FakePlanner, OpenAICompatPlanner
 from ndecon.agent.runner import run_planner
 from ndecon.creation import plans as creation_plans
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
-from ndecon.creation.jobs import JobRegistry, job_status
+from ndecon.creation.jobs import JOB_INTERRUPTED, JOB_RUNNING, JobRegistry, job_status
 from ndecon.creation.models import (
     CHAPTER_ORDER_MAX,
     Beat,
@@ -286,6 +286,13 @@ un_server 传 server.jobs），不能在这里新建：
                 self._generate(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
                 self._run_agent(path.split("/")[3], payload)
+            elif (
+                len(parts) == 6
+                and parts[:2] == ["api", "projects"]
+                and parts[3] == "runs"
+                and parts[5] == "pause"
+            ):
+                self._pause_batch_job(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/runs"):
                 self._run_chapters_txn(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/plan/settings"):
@@ -1390,6 +1397,40 @@ un_server 传 server.jobs），不能在这里新建：
                 "to": job.last,
                 "total": job.total,
                 "poll": f"/api/projects/{project_id}/runs/{job.run_id}",
+            })
+
+        def _pause_batch_job(self, project_id: str, run_id: str) -> None:
+            """请求暂停一次连写：只在两章之间停，当前章照常提交完。
+
+            为什么不做「立刻中断」：一章的事务是原子的（写 run 记录 → 生成 →
+            过闸门 → 覆盖写正文与摘要 → 提交游标）。生成中途硬掐会留下半截正文，
+            而 `write_manuscript` 是整篇覆盖写 —— 半截正文会把上一版好内容冲掉。
+            所以这里只是举手，后台线程在下一章开始前退出，用户拿到的是
+            「这一章写完就停」。
+            """
+            try:
+                store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            job = job_registry.pause(run_id)
+            if job is None or job.state != JOB_RUNNING:
+                # 内存里没有，或已经跑完了：可能是引擎重启过，或 run_id 写错了。
+                # 从磁盘读一次，能把「其实已经写完了」说清楚，而不是笼统报 404。
+                disk = job_status(store, project_id, run_id, job)
+                if disk["status"] == JOB_INTERRUPTED and not disk["chapters"]:
+                    self._error(404, f"找不到这次连写：{run_id}")
+                    return
+                self._send_json(409, {
+                    "error": "这次连写已经不在运行了，无法暂停",
+                    "job": disk,
+                })
+                return
+            self._send_json(202, {
+                "run_id": job.run_id,
+                "status": JOB_RUNNING,
+                "pause_requested": True,
+                "note": "当前这一章会写完再停，已提交的章不受影响",
             })
 
         def _get_batch_job(self, project_id: str, run_id: str) -> None:

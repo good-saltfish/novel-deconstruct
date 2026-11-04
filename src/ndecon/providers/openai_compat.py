@@ -42,11 +42,19 @@ from ndecon.providers.retry import call_with_retry
 _MAX_CHAPTER_CHARS = 16000
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-# 60 秒对写正文远远不够：实测 deepseek-flash 写一章 2600 字要 25 秒，
-# glm-5.3-flash 连只回一个 token 的连通性测试都要 9 秒（推理模型的固定开销
-# 就摆在那儿）。按 60 秒判，慢模型永远读超时，而重试只是把等待翻四倍。
-# 180 秒是「实测 25 秒 × 7 倍余量」，正常模型永远碰不到，卡死时才起作用。
-_DEFAULT_TIMEOUT_SECONDS = 180.0
+# 超时是**兜底**，不是判断模型好坏的标准。
+#
+# 用户的原话：「可以让用户手动暂停 遇到模型出错报错 而不是给自己一个超时时间
+# 没必要」。他的意思是：慢不该由引擎单方面判死刑——一章要写多久取决于模型、
+# 目标字数、以及那台机器当时的状态，引擎猜不准；用户看着进度条，该停的时候
+# 自己点暂停。
+#
+# 但 `httpx` 不设超时就会永久挂住（连接断了都不返回），所以必须留一个
+# 远大于正常耗时的兜底：实测 deepseek-flash 写一章 2600 字 25 秒、最慢 81 秒，
+# glm-5.3-flash 只回 1 个 token 也要 9 秒。900 秒是「最慢实测的 11 倍」，
+# 正常情况永远碰不到；碰到它说明端点真的卡死了（不是模型慢），此时报错才是
+# 对的。想改就设 NOVEL_DECON_TIMEOUT，或在面板的模型设置里填。
+_DEFAULT_TIMEOUT_SECONDS = 900.0
 
 
 def _describe_http_error(response: httpx.Response) -> str:
@@ -84,11 +92,12 @@ def _describe_http_error(response: httpx.Response) -> str:
 
 
 def _resolve_timeout(timeout: float | None) -> float:
-    """解析实际超时秒数：显式参数优先，其次 NOVEL_DECON_TIMEOUT，最后默认 60s。
+    """解析实际超时秒数：显式参数优先，其次 NOVEL_DECON_TIMEOUT，最后默认 900s。
 
-    长章节（尤其推理型模型先思考再输出）60 秒经常不够，所以留一个环境变量出口，
-    不必改代码就能调大；非法值静默回退默认值而不是启动失败——写书的人不该
-    因为一个拼错的环境变量连面板都打不开。
+    这是兜底值而不是性能判据：正常耗时远小于它，撞上它说明端点卡死。
+    留一个环境变量出口，是为了让确实需要更长的场景（超大章节、慢机器）
+    不必改代码；非法值静默回退默认值而不是启动失败——写书的人不该因为
+    一个拼错的环境变量连面板都打不开。
     """
     if timeout is not None and timeout > 0:
         return float(timeout)
@@ -185,17 +194,17 @@ class OpenAICompatProvider:
                     },
                 )
             except httpx.TimeoutException as exc:
-                # 一章几千字、推理模型还要先思考，读超时是最常见的失败。
-                # 报出实际超时值与模型名，否则用户只会看到「timed out」。
+                # 走到这里说明连兜底超时都撞上了（默认 900 秒），不是「模型慢」，
+                # 是端点真的卡死或网络断了。这种情况重试也没意义：
+                # 实测用户在第 3 次重试期间就来问「为什么写了 0 章」——他等的
+                # 不是结果，是「还在转圈」的假象。所以 retryable=False，立刻报。
                 #
-                # 不可重试：默认超时已抬到 180 秒，撞上它说明模型这条路真的走不通
-                # （模型太慢 / 端点卡死），重试只会让用户多等三倍时间才看到同一个错误。
-                # 实测用户在第 3 次重试期间就来问「为什么写了 0 章」——他等的不是结果，
-                # 是「还在转圈」的假象。慢模型该做的是换模型或调超时。
+                # 文案给面板里做得到的事，不提 NOVEL_DECON_TIMEOUT（那是引擎
+                # 子进程的环境变量，用户在右栏里改不到，写上去只会让他更困惑）。
                 raise ProviderTransportError(
                     f"模型响应超时（{self.model}，超过 {self._timeout_seconds:g} 秒）。"
-                    "换一个更快的模型通常就能过；也可以把细纲章数调小、"
-                    "或把每章目标字数调低后再试",
+                    "这个时长已经远超正常耗时，多半是端点卡住或网络断了；"
+                    "点一次「重启引擎」再试，或换一个模型",
                     retryable=False,
                 ) from exc
             except httpx.HTTPError as exc:
