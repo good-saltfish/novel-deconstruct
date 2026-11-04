@@ -238,9 +238,19 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
     written = sum(1 for rec in records if rec.status == "committed")
     failures = sum(1 for rec in records if rec.status != "committed")
     unsettled = any(not rec.settled for rec in records)
+    # 状态推断必须区分「跑完了」和「半路停下」：
+    # 全部 committed 且没有未结算记录 = 这次连写其实成功了，只是任务对象被回收
+    # （引擎重启或内存表清理）。若一律报 stopped，界面会显示「中途停下」，
+    # 而用户看到的是 10 章全在 —— 又是一次「活儿干完了但显示失败」。
+    if unsettled:
+        state = JOB_INTERRUPTED
+    elif failures:
+        state = JOB_STOPPED
+    else:
+        state = JOB_FINISHED
     return {
         "run_id": run_id,
-        "status": JOB_INTERRUPTED if unsettled else JOB_STOPPED,
+        "status": state,
         "from": min(orders),
         "to": max(orders),
         "total": len(records),
@@ -261,7 +271,11 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
             }
             for rec in records
         ],
-        "error": "引擎重启过，任务已不在内存里；上面的进度是从 run 记录读出来的" if unsettled else "",
+        "error": (
+            "引擎重启过，任务已不在内存里；上面的进度是从 run 记录读出来的"
+            if unsettled
+            else "任务已不在内存里（引擎重启过），进度是从 run 记录读出来的"
+        ),
         "started_at": records[0].started_at,
         "ended_at": records[-1].ended_at,
     }

@@ -370,8 +370,9 @@ def test_batch_job_status_falls_back_to_disk(server) -> None:
     assert body["run_id"] == "run-disk"
     assert body["written"] == 2
     assert [ch["order"] for ch in body["chapters"]] == [1, 2]
-    # 已全部 settled，所以不是 interrupted，而是 stopped（内存里没有活任务）。
-    assert body["status"] == "stopped"
+    # 已全部 committed 且无未结算记录 —— 这次连写其实成功了，只是任务对象没了。
+    # 若报 stopped，界面会显示「中途停下」，而用户看到 2 章正文都在。
+    assert body["status"] == "finished"
 
 
 def test_static_index_served(server) -> None:
@@ -571,3 +572,30 @@ def test_uncaught_error_becomes_json_500_instead_of_dropped_connection(
     assert status == 500, body
     assert "error" in body
     assert "模拟未捕获异常" in body["error"]
+
+
+def test_batch_run_survives_engine_restart(server) -> None:
+    """引擎重启后，同一个 run_id 仍能从磁盘 run 记录读出进度。
+
+    这条锁住 jobs.py 的核心承诺：任务状态以磁盘为准，内存只做加速。
+    没有它，用户重启引擎后就再也查不到那次连写跑到第几章了。
+    """
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "重启验证"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate", {"chapter_count": 3})
+
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 3, "provider": "fake", "run_id": "run-restart"},
+    )
+    assert status == 202, started
+    _wait_batch(server, cre_id, "run-restart")
+
+    # 模拟「引擎重启」：内存里的任务全丢了
+    server.jobs._jobs.clear()
+
+    status, body = api_request(server, "GET", f"/api/projects/{cre_id}/runs/run-restart")
+    assert status == 200, body
+    assert body["written"] == 3, body
+    assert body["status"] != "running", body
+    assert "从 run 记录读出来" in body["error"], body
