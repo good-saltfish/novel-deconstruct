@@ -18,7 +18,7 @@ from typing import Protocol
 from ndecon.creation.models import ChapterSelfReview, ChapterWriting
 from ndecon.providers.errors import ProviderResponseError
 from ndecon.providers.openai_compat import OpenAICompatProvider
-from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT
+from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER
 from ndecon.retrieval.context import ContextPack
 
 CHAPTER_PROMPT_VERSION = "cw-v0"
@@ -149,8 +149,6 @@ class FakeChapterWriter:
     model_id = "rule:fake-chapter"
     prompt_version = CHAPTER_PROMPT_VERSION
 
-    PLACEHOLDER_BANNER = "【Fake 占位正文：由离线规则生成，仅用于跑通流程，不是可用的小说内容，请替换】"
-
     # 确定性句式池。**每个池的长度必须互不相同**：句式周期是各池长度的最小公倍数，
     # 池长全相同会让场景句以该长度循环，直接撞上 repeat_span 硬门（12 字片段 ≥3 次）。
     #
@@ -269,7 +267,7 @@ class FakeChapterWriter:
         """按开篇钩→核心事件→场景展开→章尾钩的结构生成确定性占位正文。"""
         target = pack.chapter_outline
         paragraphs = [
-            self.PLACEHOLDER_BANNER,
+            PLACEHOLDER_BANNER,
         ]
         if pack.previous_summary:
             paragraphs.append(

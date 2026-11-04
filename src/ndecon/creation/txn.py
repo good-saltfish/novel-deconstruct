@@ -30,6 +30,7 @@ from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWrite
 from ndecon.creation.models import ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
+from ndecon.quality.fingerprint import scan_chapter
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, GateReport, check_chapter
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import ChapterSummary, CreationProject
@@ -80,6 +81,27 @@ def _target_chars(project: CreationProject, order: int) -> int:
     return getattr(project.draft.chapters[order - 1], "target_chars", None) or (
         CHAPTER_TARGET_CHARS_DEFAULT
     )
+
+
+def _recent_fingerprints(
+    store: WorkspaceStore,
+    project: CreationProject,
+    order: int,
+    window: int = 12,
+) -> list[dict[str, float]]:
+    """取前 window 章每条指纹规则的实测值，供跨章漂移判据使用。
+
+    只取有正文的章：写了一半没落盘的章不该参与统计。
+    返回顺序与章号一致（早 -> 晚），闸门按这个顺序取最后 DRIFT_WINDOW 章。
+    """
+    series: list[dict[str, float]] = []
+    for previous in range(max(1, order - window), order):
+        content = store.read_manuscript(project.meta.id, previous)
+        if not content:
+            continue
+        report = scan_chapter(content)
+        series.append({finding.rule: finding.value for finding in report.findings})
+    return series
 
 
 def _recent_texts(store: WorkspaceStore, project: CreationProject, order: int, window: int = 20) -> list[str]:
@@ -178,6 +200,9 @@ def run_chapter(
             target_chars=target_chars,
             previous_texts=_recent_texts(store, project, order),
             summary_present=True,  # 摘要还没跑，先不判这一项
+            # 跨章 AI 味漂移：单章阈值不能当硬门（人类小说与 AI 在单章上完全重叠），
+            # 只有连续多章的章级中位数持续偏高才阻断，所以必须带上历史实测值。
+            previous_fingerprints=_recent_fingerprints(store, project, order),
         )
         if report.verdict == "pass":
             break

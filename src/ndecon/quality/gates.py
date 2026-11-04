@@ -18,6 +18,7 @@ from collections import Counter
 
 from pydantic import BaseModel, Field
 
+from ndecon.quality.drift import drift_verdict
 from ndecon.quality.fingerprint import scan_chapter
 
 # 单章字数目标默认值（网文常见 2000-3500 字的中间带）。真实项目应写进细纲；
@@ -46,6 +47,12 @@ FRESHNESS_WINDOW = 20
 FRESHNESS_NGRAM = 5
 CROSS_CHAPTER_JACCARD_MAX = 0.30
 FRESHNESS_CONTAINMENT_REPORT = 0.45
+
+# 离线占位正文的固定 banner。它出现在正文里就说明这一章是 FakeChapterWriter 写的
+# 假稿，不是要交付的小说。漂移判据对它豁免 —— 模板生成器的 period_per_paragraph
+# 稳定在 14-16（参考 p95=4），必然触发，而离线链路正是没有模型时唯一的验证手段。
+# 定义放在这里而不是 chapters.py，是为了避免 chapters -> gates -> chapters 的循环导入。
+PLACEHOLDER_BANNER = "【Fake 占位正文：由离线规则生成，仅用于跑通流程，不是可用的小说内容，请替换】"
 
 # 工程词 tier1：这些词只该出现在提纲/内部记录里，出现在正文说明模型把
 # 自己的任务描述漏进了作品。tier2（本章/下一章/读者/伏笔）太常见，只提示不拦。
@@ -321,6 +328,34 @@ def _check_cross_chapter(text: str, previous_texts: list[str]) -> list[GateFailu
     ]
 
 
+def _drift_inputs(
+    text: str,
+    previous_fingerprints: list[dict[str, float]] | None,
+) -> list[tuple[str, list[float]]]:
+    """把「前几章实测值 + 本章实测值」按规则拼成序列，供漂移判据使用。
+
+    没有历史指纹时返回空列表：前几章都没量过，谈不上「正在漂」。
+
+    占位正文（FakeChapterWriter 产出的离线模板）直接跳过漂移判据：
+    它是「用来跑通链路的假稿」，不是要交付的小说，判它「AI 味漂移」没有意义。
+    实测它的 period_per_paragraph 稳定在 14-16（参考 p95=4），必然触发；
+    若不豁免，离线链路从第 5 章起就写不下去，而离线链路正是没有模型时唯一的验证手段。
+    真实模型不会产出这行 banner，所以豁免不会放过真 AI 味。
+    """
+    if not previous_fingerprints:
+        return []
+    if PLACEHOLDER_BANNER in text:
+        return []
+    current = {finding.rule: finding.value for finding in scan_chapter(text).findings}
+    series: dict[str, list[float]] = {}
+    for chapter in previous_fingerprints:
+        for rule, value in chapter.items():
+            series.setdefault(rule, []).append(float(value))
+    for rule, value in current.items():
+        series.setdefault(rule, []).append(float(value))
+    return list(series.items())
+
+
 def check_chapter(
     text: str,
     *,
@@ -328,11 +363,17 @@ def check_chapter(
     previous_texts: list[str] | None = None,
     summary_present: bool = True,
     fingerprint_report: object | None = None,
+    previous_fingerprints: list[dict[str, float]] | None = None,
 ) -> GateReport:
     """对一章正文跑全部硬门与软门，返回判定报告（不改写正文）。
 
     ``summary_present=False`` 时记一条 coverage 硬门失败：没有摘要的章节进不了
     检索索引，后续章节就会"忘掉"这一章——这正是全自动长篇最常见的断链方式。
+
+    ``previous_fingerprints`` 是前若干章的指纹实测值（每章一个 ``{rule: value}``），
+    用来跑跨章漂移判据。**单章的 AI 味阈值不能当硬门**（实测人类小说与 AI 正文
+    在单章上完全重叠，见 ``ndecon/quality/drift.py`` 的说明）；能成立的是
+    「连续多章的章级中位数持续偏高」。不给这个参数就不判漂移。
     """
     previous_texts = previous_texts or []
     hard: list[GateFailure] = []
@@ -350,6 +391,21 @@ def check_chapter(
             hard.append(failure)
 
     hard.extend(_check_cross_chapter(text, previous_texts))
+
+    # 跨章 AI 味漂移：单章不判，只有连续多章的中位数持续过线才阻断。
+    # 顺序放在跨章相似度之后：相似度是「这一章像上一章」，漂移是「整本在变味」，
+    # 两件事的处置不同（前者改细纲，后者换模型/改提示词）。
+    for rule, values in _drift_inputs(text, previous_fingerprints):
+        drifted, why = drift_verdict(values, rule)
+        if drifted:
+            hard.append(
+                GateFailure(
+                    gate="drift",
+                    rule=f"drift_{rule}",
+                    detail=why,
+                    evidence=[],
+                )
+            )
 
     if not summary_present:
         hard.append(

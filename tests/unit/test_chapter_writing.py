@@ -17,6 +17,7 @@ from ndecon.creation.models import (
     ProtagonistProfile,
 )
 from ndecon.providers.errors import ProviderResponseError
+from ndecon.quality.gates import PLACEHOLDER_BANNER
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import CreationProject, ProjectMeta, ReferenceProject
 from ndecon.workspace.store import WorkspaceStore
@@ -70,7 +71,7 @@ def test_fake_writer_shape_and_placeholder_banner(tmp_path) -> None:
     pack = build_context_pack(project, 2)
     writing = FakeChapterWriter().write_chapter(pack)
 
-    assert FakeChapterWriter.PLACEHOLDER_BANNER in writing.content
+    assert PLACEHOLDER_BANNER in writing.content
     assert "被登记成守灯人" in writing.content  # 本章核心事件
     assert "井底传来抓挠声" in writing.content  # 本章章尾钩
     assert "发现路灯随心跳明灭" in writing.content  # 前章摘要（细纲退化）
