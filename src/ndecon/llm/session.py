@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from dataclasses import dataclass
@@ -21,6 +22,16 @@ class LLMSessionConfig(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = Field(min_length=1)
+
+
+def _key_fingerprint(api_key: str) -> str:
+    """key 的短指纹：用于核对「引擎手里的是不是我刚下发的那个 key」。
+
+    只取 sha256 前 12 位，反推不出原文；空 key 返回空串。
+    """
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -62,7 +73,14 @@ class LLMSession:
             self.model = ""
 
     def public_view(self) -> dict:
-        """返回不含 key 的安全视图供前端展示。"""
+        """返回不含 key 的安全视图供前端展示。
+
+        额外给一个 `key_fingerprint`：`has_key` 只能说明「有 key」，不能说明
+        「还是我刚才下发的那个 key」。插件每次拉起引擎都会换一个桥 token，
+        只比对 base_url/model 的话，两边都显示「配好了」而实际 token 已经对不上，
+        用户要到点生成时才吃一个 401。指纹是 key 的 sha256 前 12 位，
+        反推不出原文，但足够判断是否同一个。
+        """
         with self._lock:
             preset = get_preset(self.provider)
             return {
@@ -72,6 +90,7 @@ class LLMSession:
                 "model": self.model,
                 "configured": self.is_configured(),
                 "has_key": bool(self.api_key),
+                "key_fingerprint": _key_fingerprint(self.api_key),
             }
 
     def require_provider(self) -> OpenAICompatProvider:

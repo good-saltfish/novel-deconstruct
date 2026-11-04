@@ -206,11 +206,13 @@ def test_read_timeout_becomes_transport_error() -> None:
         provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
     # 文案要能定位：模型名 + 实际秒数 + 怎么调大
     assert "test-model" in str(exc.value)
-    assert "60" in str(exc.value)
-    assert "NOVEL_DECON_TIMEOUT" in str(exc.value)
-    # 传输失败默认重试，所以打满了 max_attempts（默认 4）
-    assert exc.value.retryable is True
-    assert len(seen) == 4
+    assert "180" in str(exc.value)
+    assert "更快的模型" in str(exc.value)
+    # 读超时不重试：默认超时已抬到 180 秒，撞上它说明这条路真的走不通。
+    # 重试 4 次只会让用户干等 12 分钟才看到同一个错误（实测用户在第 3 次
+    # 重试期间就来问「为什么写了 0 章」）。
+    assert exc.value.retryable is False
+    assert len(seen) == 1
 
 
 def test_connect_error_becomes_transport_error() -> None:
@@ -225,19 +227,47 @@ def test_connect_error_becomes_transport_error() -> None:
     assert "https://api.test/v1" in str(exc.value)
 
 
+def test_http_error_message_is_human_readable() -> None:
+    """上游错误体是 OpenAI 风格的嵌套 JSON 时，错误文案要抠出 message。
+
+    真实故障（2026-11-04）：用户换模型后看到
+    `上游返回 HTTP 502: {"error":{"message":"模型没返回内容（max-tokens）",
+    "code":"model-failed"}}` —— 转义引号糊成一片，有用的那句话被埋在最里面。
+    插件桥就是这么返回的，所以这条必须覆盖。
+    """
+
+    def _bad_gateway(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            json={"error": {"message": "模型没返回内容（max-tokens）", "code": "model-failed"}},
+            request=request,
+        )
+
+    provider, _ = _make_provider(_bad_gateway)
+    with pytest.raises(ProviderHTTPError) as exc:
+        provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
+    message = str(exc.value)
+    # 有用的那句话在最前面，且带状态码与上游 code
+    assert "模型没返回内容" in message
+    assert "502" in message
+    assert "model-failed" in message
+    # 不能把整段 JSON 原样塞进去
+    assert '{"error"' not in message
+
+
 def test_timeout_resolution_prefers_explicit_then_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """超时值优先级：显式参数 > NOVEL_DECON_TIMEOUT > 默认 60 秒；非法环境变量回退默认。"""
+    """超时值优先级：显式参数 > NOVEL_DECON_TIMEOUT > 默认 180 秒；非法环境变量回退默认。"""
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "180")
     assert _resolve_timeout(None) == 180.0
     assert _resolve_timeout(45.0) == 45.0
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "abc")
-    assert _resolve_timeout(None) == 60.0
+    assert _resolve_timeout(None) == 180.0
     monkeypatch.setenv("NOVEL_DECON_TIMEOUT", "-5")
-    assert _resolve_timeout(None) == 60.0
+    assert _resolve_timeout(None) == 180.0
     monkeypatch.delenv("NOVEL_DECON_TIMEOUT", raising=False)
-    assert _resolve_timeout(None) == 60.0
+    assert _resolve_timeout(None) == 180.0
 
 
 def test_provider_records_effective_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

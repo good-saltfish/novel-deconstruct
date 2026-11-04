@@ -42,7 +42,45 @@ from ndecon.providers.retry import call_with_retry
 _MAX_CHAPTER_CHARS = 16000
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-_DEFAULT_TIMEOUT_SECONDS = 60.0
+# 60 秒对写正文远远不够：实测 deepseek-flash 写一章 2600 字要 25 秒，
+# glm-5.3-flash 连只回一个 token 的连通性测试都要 9 秒（推理模型的固定开销
+# 就摆在那儿）。按 60 秒判，慢模型永远读超时，而重试只是把等待翻四倍。
+# 180 秒是「实测 25 秒 × 7 倍余量」，正常模型永远碰不到，卡死时才起作用。
+_DEFAULT_TIMEOUT_SECONDS = 180.0
+
+
+def _describe_http_error(response: httpx.Response) -> str:
+    """把上游错误体翻译成一句能照着做的话。
+
+    上游（包括本插件的模型桥）返回的是 OpenAI 风格的
+    `{"error": {"message": "...", "code": "..."}}`。直接把 response.text 塞进
+    错误里，用户看到的是 `上游返回 HTTP 502: {"error":{"message":"模型没返回
+    内容（...）","code":"model-failed"}}` —— 转义引号糊成一片，真正有用的那句
+    话被埋在最里面。这里把 message 抠出来放在最前面，原始 JSON 只留一小段兜底。
+    """
+    fallback = f"上游返回 HTTP {response.status_code}: {response.text[:200]}"
+    try:
+        payload = response.json()
+    except ValueError:
+        return fallback
+    if not isinstance(payload, dict):
+        return fallback
+    error = payload.get("error")
+    message = ""
+    code = ""
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        code = str(error.get("code") or "").strip()
+    elif isinstance(error, str):
+        message = error.strip()
+    if not message:
+        message = str(payload.get("detail") or payload.get("message") or "").strip()
+    if not message:
+        return fallback
+    prefix = f"上游返回 HTTP {response.status_code}"
+    if code:
+        prefix = f"{prefix}（{code}）"
+    return f"{prefix}：{message}"
 
 
 def _resolve_timeout(timeout: float | None) -> float:
@@ -149,9 +187,16 @@ class OpenAICompatProvider:
             except httpx.TimeoutException as exc:
                 # 一章几千字、推理模型还要先思考，读超时是最常见的失败。
                 # 报出实际超时值与模型名，否则用户只会看到「timed out」。
+                #
+                # 不可重试：默认超时已抬到 180 秒，撞上它说明模型这条路真的走不通
+                # （模型太慢 / 端点卡死），重试只会让用户多等三倍时间才看到同一个错误。
+                # 实测用户在第 3 次重试期间就来问「为什么写了 0 章」——他等的不是结果，
+                # 是「还在转圈」的假象。慢模型该做的是换模型或调超时。
                 raise ProviderTransportError(
                     f"模型响应超时（{self.model}，超过 {self._timeout_seconds:g} 秒）。"
-                    "长章节可以调大 NOVEL_DECON_TIMEOUT 后重试"
+                    "换一个更快的模型通常就能过；也可以把细纲章数调小、"
+                    "或把每章目标字数调低后再试",
+                    retryable=False,
                 ) from exc
             except httpx.HTTPError as exc:
                 raise ProviderTransportError(
@@ -162,7 +207,7 @@ class OpenAICompatProvider:
                 if retryable:
                     self.diagnostics.http_retries += 1
                 raise ProviderHTTPError(
-                    f"上游返回 HTTP {response.status_code}: {response.text[:200]}",
+                    _describe_http_error(response),
                     status_code=response.status_code,
                     retryable=retryable,
                 )
