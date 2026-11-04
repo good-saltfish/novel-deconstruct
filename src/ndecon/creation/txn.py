@@ -67,8 +67,10 @@ class ChapterOutcome:
 def _target_chars(project: CreationProject, order: int) -> int:
     """单章字数目标：优先取细纲里显式写的目标，缺省用默认值。
 
-    细纲暂时没有该字段（`ChapterOutline` 还没有 target_chars），
-    所以这里留出扩展位，同时保证行为稳定——全自动连跑时目标不能随章漂移。
+    细纲的 `ChapterOutline` 目前没有 `target_chars` 字段，所以这里用
+    `getattr` 留出扩展位；缺省值必须与 `build_context_pack` 写进 prompt 的
+    那个数字同源（都读 `CHAPTER_TARGET_CHARS_DEFAULT`），否则闸门按 2600 判、
+    prompt 却说别的数字，模型永远判"偏短"。
     """
     return getattr(project.draft.chapters[order - 1], "target_chars", None) or (
         CHAPTER_TARGET_CHARS_DEFAULT

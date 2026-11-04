@@ -19,6 +19,7 @@ from ndecon.creation.models import (
     ProtagonistProfile,
 )
 from ndecon.domain.models import ChapterSummary
+from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT as DEFAULT_CHAPTER_TARGET_CHARS
 from ndecon.retrieval.bm25 import BM25Index, IndexedDocument
 from ndecon.retrieval.foreshadow import (
     ForeshadowEntry,
@@ -64,6 +65,11 @@ class ContextPack(BaseModel):
     retrieved: list[RetrievedDoc] = Field(default_factory=list)
     open_foreshadows: list[ForeshadowEntry] = Field(default_factory=list)
     index_doc_count: int = Field(ge=0)
+    target_chars: int = Field(
+        default=0,
+        ge=0,
+        description="本章正文的汉字目标字数；写进 prompt 的要求，与闸门口径一致",
+    )
     repair_feedback: list[str] = Field(
         default_factory=list,
         description="上一版未过硬门的原因；非空表示这是带证据的修复重写，不是新章",
@@ -148,6 +154,10 @@ def build_context_pack(
     open_debts = open_foreshadows_at(ledger, chapter_order)
 
     confirmed = project.confirmed_parts
+    # 字数目标是 prompt 的一部分，必须和闸门用同一个来源：
+    # 闸门按 target_chars±15% 判，prompt 若不说，模型只会按自己的习惯写
+    # （真实模型通常 1000-1500 字），于是每次都被判"偏短"，重写也偏短。
+    target_chars = getattr(target, "target_chars", None) or DEFAULT_CHAPTER_TARGET_CHARS
     return ContextPack(
         project_id=project.meta.id,
         chapter_order=chapter_order,
@@ -162,4 +172,5 @@ def build_context_pack(
         retrieved=retrieved,
         open_foreshadows=open_debts,
         index_doc_count=len(active_index.documents),
+        target_chars=target_chars,
     )

@@ -296,6 +296,48 @@ def test_repair_feedback_lands_in_prompt() -> None:
     assert "chapter_length" in brief
 
 
+def test_prompt_states_target_length() -> None:
+    """字数目标必须写进 prompt。
+
+    闸门按 ``target_chars`` ±15% 判硬门，prompt 若不说，模型只会按自己的
+    习惯写（真实模型实测 1000-1500 字），于是每次都被判"偏短"，重写也偏短
+    ——用户看到的是「连写：写了 0 章，失败 1 章：第 1 章 repair」。
+    """
+    from ndecon.creation.chapters import context_brief
+    from ndecon.retrieval.context import ContextPack
+
+    pack = ContextPack(
+        project_id="p",
+        chapter_order=1,
+        chapter_outline=ChapterOutline(order=1, title="一"),
+        previous_summary_source="none",
+        index_doc_count=0,
+        target_chars=2600,
+    )
+    brief = context_brief(pack)
+    assert "本章目标字数" in brief
+    assert "2600" in brief
+    # 可接受区间与闸门的 0.85/1.15 不同口径是刻意的：prompt 给更紧的 ±10%，
+    # 留出一点余量，模型落在 2340-2860 时闸门必然通过。
+    assert "2340" in brief and "2860" in brief
+
+
+def test_prompt_omits_length_when_target_unknown() -> None:
+    """目标字数为 0 时不要凭空编一个数字。"""
+    from ndecon.creation.chapters import context_brief
+    from ndecon.retrieval.context import ContextPack
+
+    pack = ContextPack(
+        project_id="p",
+        chapter_order=1,
+        chapter_outline=ChapterOutline(order=1, title="一"),
+        previous_summary_source="none",
+        index_doc_count=0,
+        target_chars=0,
+    )
+    assert "本章目标字数" not in context_brief(pack)
+
+
 def test_resume_skips_committed(tmp_path, monkeypatch) -> None:
     """resume 只补没提交的章：已 committed 的章不许重写（否则连跑会反复烧钱）。"""
     store = _store(tmp_path)

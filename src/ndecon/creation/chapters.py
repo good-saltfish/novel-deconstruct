@@ -35,7 +35,10 @@ CHAPTER_SYSTEM_MESSAGE = """你是一名资深中文网络小说写手，为主�
    若为了叙事合理需要偏离细纲，必须在 review.deviations 中逐条说明。
 3. 正文使用中文网文白话：场景具体、对话推动、钩子前置；不写大纲、不写写作说明。
 4. 上下文只包含作者本书的资料，严禁虚构与设定冲突的能力/角色/规则。
-5. 同时输出结构化自评：钩子强度、信息密度（1-5）、是否贴合细纲与偏差点。
+5. **字数必须达到用户消息里给出的「本章目标字数」**（允许 ±10%）。字数是硬要求，
+   不是建议：写不够会被打回重写。宁可多写场景与对话，也不要用一句话概括
+   （"他想了想，决定动手"）把情节赶完——那会同时拉低信息密度与字数。
+6. 同时输出结构化自评：钩子强度、信息密度（1-5）、是否贴合细纲与偏差点。
 """
 
 
@@ -70,6 +73,16 @@ def context_brief(pack: ContextPack) -> str:
         f"\n开篇钩：{target.opening_hook or '（细纲未指定）'}"
         f"\n章尾钩：{target.ending_hook or '（细纲未指定）'}"
     )
+    if pack.target_chars > 0:
+        # 字数要求必须显式写进 prompt：闸门按 target_chars±15% 判硬门，
+        # prompt 不说的话模型只会按自己的习惯写（实测真实模型 1000-1500 字），
+        # 于是每次都被判"偏短"，重写两遍还是偏短——用户看到的是"第 1 章 repair"。
+        low = int(pack.target_chars * 0.9)
+        high = int(pack.target_chars * 1.1)
+        lines.append(
+            f"\n【本章目标字数】{pack.target_chars} 个汉字（可接受 {low}-{high} 字）。"
+            f"这是硬要求：不足 {low} 字会被打回重写。"
+        )
 
     if pack.previous_summary:
         lines.append(f"\n【前一章摘要】（来源：{pack.previous_summary_source}）\n{pack.previous_summary}")
