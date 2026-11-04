@@ -281,3 +281,68 @@ def test_provider_records_effective_timeout(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert provider._timeout_seconds == 240.0
 
+def test_parse_json_repairs_unescaped_quote_inside_string() -> None:
+    """模型在 JSON 字符串值里写裸引号时必须就地修好，不能整章白写。
+
+    真实故障（2026-11-04）：glm-5.3-flash 写了 那条"绿灯路权"。，
+    整段响应体报 Expecting ',' delimiter，一章 35 秒白写；
+    同一模型换个采样又正常，所以是间歇性的。一次重试要再等 35 秒，
+    不如就地修一次。
+    """
+
+    broken = '{"content": "他说那条"绿灯路权"。\\n\\n后面还有。", "review": {"hook_strength": 5}}'
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+    data = OpenAICompatProvider._parse_json(broken)
+    # \\n 在 JSON 里是换行转义，解析后是真实换行
+    assert data["content"] == '他说那条"绿灯路权"。\n\n后面还有。'
+    assert data["review"] == {"hook_strength": 5}
+
+
+def test_parse_json_leaves_valid_json_untouched() -> None:
+    """合法 JSON 必须原样通过：修复器只允许在解析失败后介入。"""
+    valid = json.dumps({"content": "正文", "review": {"hook_strength": 5}}, ensure_ascii=False)
+    data = OpenAICompatProvider._parse_json(valid)
+    assert data["content"] == "正文"
+
+
+def test_parse_json_still_reports_truly_broken_payload() -> None:
+    """修不好时必须报错，不能假装成功。"""
+    with pytest.raises(ProviderResponseError) as exc:
+        OpenAICompatProvider._parse_json('{"content": "没有收尾引号')
+    assert "模型未返回合法 JSON" in str(exc.value)
+
+
+def test_parse_json_rejects_non_object() -> None:
+    """顶层不是对象要报错，否则调用方会在取键时炸在别处。"""
+    with pytest.raises(ProviderResponseError) as exc:
+        OpenAICompatProvider._parse_json("[1, 2, 3]")
+    assert "顶层不是对象" in str(exc.value)
+
+def test_parse_json_drops_trailing_explanation() -> None:
+    """对象写完后模型又续一句解释时必须截掉尾巴，不能整章丢弃。
+
+    真实故障（2026-11-04）：glm-5.3-flash 一轮返回
+    Extra data: line 1 column 2235 (char 2234) —— 前面是完整对象，
+    后面多了一段说明。内容已经写对了，只是包裹坏了。
+    """
+    payload = '{"content": "正文", "review": {"hook_strength": 5}}\n\n以上就是这一章。'
+    data = OpenAICompatProvider._parse_json(payload)
+    assert data["content"] == "正文"
+    assert data["review"] == {"hook_strength": 5}
+
+
+def test_parse_json_repairs_quotes_and_trailing_text_together() -> None:
+    """两种坏法同时出现也要能修（同一轮实测确实会叠加）。"""
+    payload = (
+        '{"content": "他说那条"绿灯路权"。", "review": {"hook_strength": 5}}'
+        '\n\n补充说明：这一章字数达标。'
+    )
+    data = OpenAICompatProvider._parse_json(payload)
+    assert data["content"] == '他说那条"绿灯路权"。'
+
+
+def test_parse_json_does_not_pretend_truncated_object_is_ok() -> None:
+    """对象本身截断时必须报错——不能把半截当完整交付。"""
+    with pytest.raises(ProviderResponseError):
+        OpenAICompatProvider._parse_json('{"content": "正文", "review": {"hook_strength": 5')

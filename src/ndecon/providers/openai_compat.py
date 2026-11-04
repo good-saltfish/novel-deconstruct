@@ -41,7 +41,103 @@ from ndecon.providers.retry import call_with_retry
 # 单章送入模型的字符上限（约对应 8k token 预算的中文输入）；超出截断并记入诊断
 _MAX_CHAPTER_CHARS = 16000
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+def _json_object_prefix(text: str, start: int) -> str | None:
+    """从 start 处的 `{` 开始，返回第一个括号配平的完整 JSON 对象。
+
+    用来对付「对象写完了又续一句解释」的 `Extra data`。用括号计数 + 字符串
+    状态机，不用正则（正则数不清嵌套）。找不到配平就返回 None——那说明
+    对象本身是截断的，不是多了尾巴，不能假装成功。
+    """
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+# JSON 字符串内部的裸引号：前一个字符不是反斜杠的 `"`，且它不在合法边界上。
+_STRING_QUOTE = '"'
+
+
+def _repair_unescaped_quotes(text: str) -> str:
+    """把 JSON 字符串值里未转义的裸引号转义掉，返回修复后的文本。
+
+    只在整体解析失败后才调用，所以这里可以假设「文本本来就不是合法 JSON」。
+    做法是逐字符走一遍状态机：遇到 `"` 且当前处于字符串内时，判断它是
+    真正的结束引号还是正文里的引号——正文里的引号后面紧跟着的字符通常不是
+    `:`、`,`、`}`、`]` 这些结构符号，也不会有 `\\n` 之外的结构。
+
+    判据要保守：宁可修不好（返回原文，让上层报错），也不要把合法 JSON 改坏。
+    真正的结束引号后面一定跟着 `:`（对象键）、`,`、`}`、`]`、或空白后再跟这些。
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    length = len(text)
+    changed = False
+    while index < length:
+        char = text[index]
+        if not in_string:
+            if char == _STRING_QUOTE:
+                in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if escaped:
+            escaped = False
+            out.append(char)
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            out.append(char)
+            index += 1
+            continue
+        if char != _STRING_QUOTE:
+            out.append(char)
+            index += 1
+            continue
+
+        # 处于字符串内，遇到一个引号：看后面第一个非空白字符，判断是不是结构符号。
+        lookahead = index + 1
+        while lookahead < length and text[lookahead] in " \t\r\n":
+            lookahead += 1
+        following = text[lookahead] if lookahead < length else ""
+        if following in (":", ",", "}", "]", ""):
+            in_string = False
+            out.append(char)
+        else:
+            # 正文里的引号：转义它，字符串继续。
+            changed = True
+            out.append("\\")
+            out.append(char)
+        index += 1
+    if not changed:
+        return text
+    return "".join(out)
+
 # 超时是**兜底**，不是判断模型好坏的标准。
 #
 # 用户的原话：「可以让用户手动暂停 遇到模型出错报错 而不是给自己一个超时时间
@@ -163,10 +259,16 @@ class OpenAICompatProvider:
         # 超时值要留成属性：报错文案里必须写出实际秒数与怎么改，
         # 只写「timed out」用户无从判断是模型慢还是引擎挂了。
         self._timeout_seconds = _resolve_timeout(timeout)
+        # trust_env=False 是必须的，不是洁癖：Windows 上 httpx 默认会读系统代理/
+        # 证书设置，某些中转站（实测 api.site）在 TLS 握手中被系统证书链拦成
+        # `ConnectError: EOF occurred in violation of protocol`，而 urllib 直连同一
+        # 地址是通的——用户看到的是「只有 deepseek-account 能用，其它模型都不行」。
+        # 我们要连的是用户自己填的端点，不该被本机代理环境改写。
         self._client = httpx.Client(
             timeout=self._timeout_seconds,
             transport=transport,
             headers={"Authorization": f"Bearer {self.api_key}"},
+            trust_env=False,
         )
         self.diagnostics = ProviderDiagnostics()
 
@@ -240,15 +342,42 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _parse_json(content: str) -> dict:
-        """把模型文本解析为 JSON；容忍 markdown 代码围栏，仍失败则报响应错误。"""
+        """把模型文本解析为 JSON；容忍围栏、裸引号、以及对象后面多出的尾巴。
+
+        真实故障（2026-11-04，glm-5.3-flash 三轮实测三种坏法）：
+        1. 正文里写了 `那条"绿灯路权"。` —— 字符串值内部裸引号 →
+           `Expecting ',' delimiter`；
+        2. 对象写完后模型又续了一句解释 → `Extra data: line 1 column 2235`。
+        这两种都是「内容已经写对了，只是包裹坏了」，整章 35 秒白扔太亏。
+        修复只针对已确定坏掉的文本：合法 JSON 一次都不会进修复分支。
+        """
         cleaned = _JSON_FENCE.sub("", content.strip()).strip()
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            raise ProviderResponseError(f"模型未返回合法 JSON：{exc}") from exc
-        if not isinstance(data, dict):
-            raise ProviderResponseError("模型返回的 JSON 顶层不是对象")
-        return data
+        candidates = [cleaned]
+        # Extra data：第一个完整对象之后的尾巴，直接截掉再试一次。
+        first_brace = cleaned.find("{")
+        if first_brace >= 0:
+            truncated = _json_object_prefix(cleaned, first_brace)
+            if truncated is not None and truncated != cleaned:
+                candidates.append(truncated)
+        for text in list(candidates):
+            repaired = _repair_unescaped_quotes(text)
+            if repaired != text:
+                candidates.append(repaired)
+                truncated_repaired = _json_object_prefix(repaired, repaired.find("{"))
+                if truncated_repaired is not None and truncated_repaired not in candidates:
+                    candidates.append(truncated_repaired)
+        first_error: json.JSONDecodeError | None = None
+        for text in candidates:
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                if first_error is None:
+                    first_error = exc
+                continue
+            if not isinstance(data, dict):
+                raise ProviderResponseError("模型返回的 JSON 顶层不是对象")
+            return data
+        raise ProviderResponseError(f"模型未返回合法 JSON：{first_error}") from first_error
 
     def _chat_json(self, messages: list[dict]) -> dict:
         """请求并解析为 JSON 对象。"""
