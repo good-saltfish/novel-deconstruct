@@ -61,6 +61,7 @@ from ndecon.providers.errors import ProviderError
 from ndecon.providers.fake import FakeProvider
 from ndecon.quality.fingerprint import scan_chapter
 from ndecon.retrieval.context import build_context_pack
+from ndecon.workspace.atomic import read_text_with_retry
 from ndecon.workspace.models import (
     CreationProject,
     ProjectMeta,
@@ -1061,7 +1062,7 @@ un_server 传 server.jobs），不能在这里新建：
                 records = []
                 for path in sorted(run_dir.glob("ch*.json")):
                     try:
-                        records.append(json.loads(path.read_text(encoding="utf-8")))
+                        records.append(json.loads(read_text_with_retry(path)))
                     except (OSError, json.JSONDecodeError):
                         continue
                 runs.append({
@@ -1363,6 +1364,11 @@ un_server 传 server.jobs），不能在这里新建：
 
             first = start or (project.cursor + 1)
             last = end or total
+            if not start and first > total:
+                # 已经写到最后一章：这不是「区间不合法」，用户没填区间，
+                # 报 7-6 只会让人以为是自己填错了。
+                self._error(400, f"这本书已经写到最后一章了（细纲共 {total} 章，游标 {project.cursor}）")
+                return
             if first < 1 or last > total or first > last:
                 self._error(400, f"章号区间不合法：{first}-{last}（细纲共 {total} 章）")
                 return

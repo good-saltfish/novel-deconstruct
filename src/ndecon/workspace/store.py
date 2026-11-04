@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 from datetime import datetime, timedelta
@@ -17,6 +16,11 @@ from pathlib import Path
 
 from ndecon.creation.models import CHAPTER_ORDER_MAX
 from ndecon.retrieval.bm25 import BM25Index
+from ndecon.workspace.atomic import (
+    atomic_write_json,
+    atomic_write_text,
+    read_text_with_retry,
+)
 from ndecon.workspace.models import (
     CreationProject,
     ProjectMeta,
@@ -65,13 +69,14 @@ class WorkspaceStore:
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: dict) -> None:
-        """先写同目录临时文件再替换，保证 project.json 不会写一半损坏。"""
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp, path)
+        """先写同目录临时文件再替换，保证 project.json 不会写一半损坏。
+
+        临时文件名由 ndecon.workspace.atomic 生成（唯一 + 带 pid），
+        不是固定的 `path.with_suffix(".json.tmp")`。原先固定名字在并发下
+        会撞车：HTTP 请求与后台连写线程同时写同一个 project.json 时共用同一个
+        tmp，Windows 上 `os.replace` 直接报 `WinError 5`，整章被回滚。
+        """
+        atomic_write_json(path, payload)
 
     @staticmethod
     def now_iso() -> str:
@@ -86,7 +91,7 @@ class WorkspaceStore:
             if not file.is_file():
                 continue
             try:
-                data = json.loads(file.read_text(encoding="utf-8"))
+                data = json.loads(read_text_with_retry(file))
                 metas.append(ProjectMeta(**data["meta"]))
             except (KeyError, json.JSONDecodeError, ValueError):
                 continue
@@ -115,7 +120,7 @@ class WorkspaceStore:
         file = self._path_for(project_id)
         if not file.is_file():
             raise KeyError(f"项目不存在：{project_id}")
-        data = json.loads(file.read_text(encoding="utf-8"))
+        data = json.loads(read_text_with_retry(file))
         if data["meta"]["kind"] == "reference":
             return ReferenceProject(**data)
         project = CreationProject(**data)
@@ -157,7 +162,7 @@ class WorkspaceStore:
         if not path.is_file():
             return None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_with_retry(path))
         except (OSError, json.JSONDecodeError):
             return None
         try:
@@ -189,12 +194,10 @@ class WorkspaceStore:
         path = self._manuscript_path(project_id, order)
         path.parent.mkdir(parents=True, exist_ok=True)
         if keep_version and path.is_file():
-            previous = path.read_text(encoding="utf-8")
+            previous = read_text_with_retry(path)
             if previous != content:
                 self._archive_version(project_id, order, previous)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_write_text(path, content)
         return path
 
     def _archive_version(self, project_id: str, order: int, content: str) -> Path | None:
@@ -235,7 +238,7 @@ class WorkspaceStore:
         if not _SAFE_STAMP.match(stamp):
             return None
         path = self._version_dir(project_id, order) / f"{stamp}.md"
-        return path.read_text(encoding="utf-8") if path.is_file() else None
+        return read_text_with_retry(path) if path.is_file() else None
 
     def restore_version(self, project_id: str, order: int, stamp: str) -> str | None:
         """把某章回退到指定历史版本（当前正文会先被存档，回退本身可撤销）。"""
@@ -248,7 +251,7 @@ class WorkspaceStore:
     def read_manuscript(self, project_id: str, order: int) -> str | None:
         """读取章节正文；尚未生成时返回 None。"""
         path = self._manuscript_path(project_id, order)
-        return path.read_text(encoding="utf-8") if path.is_file() else None
+        return read_text_with_retry(path) if path.is_file() else None
 
     # ---- 章节摘要外置（project.json 不随章数膨胀）-------------------------
     #
@@ -281,7 +284,7 @@ class WorkspaceStore:
         if not path.is_file():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(read_text_with_retry(path))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -296,7 +299,7 @@ class WorkspaceStore:
             if not match:
                 continue
             try:
-                items.append((int(match.group(1)), json.loads(path.read_text(encoding="utf-8"))))
+                items.append((int(match.group(1)), json.loads(read_text_with_retry(path))))
             except (OSError, json.JSONDecodeError):
                 continue
         return [payload for _, payload in sorted(items)]

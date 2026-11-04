@@ -40,6 +40,7 @@ from pathlib import Path
 
 from ndecon.creation.runlog import RunLog, new_run_id, now_iso
 from ndecon.creation.txn import run_chapter
+from ndecon.workspace.atomic import atomic_write_json, read_text_with_retry
 from ndecon.workspace.models import CreationProject
 from ndecon.workspace.store import WorkspaceStore
 
@@ -256,11 +257,7 @@ def _write_job_state(store: WorkspaceStore, job: BatchJob) -> None:
         "ended_at": job.ended_at,
     }
     try:
-        path = _job_state_path(store, job.project_id, job.run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        atomic_write_json(_job_state_path(store, job.project_id, job.run_id), payload)
     except OSError:
         return
 
@@ -271,7 +268,7 @@ def _read_job_state(store: WorkspaceStore, project_id: str, run_id: str) -> dict
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_text_with_retry(path))
     except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None

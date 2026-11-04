@@ -18,12 +18,13 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from ndecon.workspace.atomic import atomic_write_json, read_text_with_retry
 
 RunStatus = Literal["in_progress", "committed", "rolled_back", "failed"]
 GateVerdict = Literal["pass", "repair", "reject"]
@@ -102,7 +103,7 @@ class RunLog:
         if not path.is_file():
             return None
         try:
-            return ChapterRun.model_validate(json.loads(path.read_text(encoding="utf-8")))
+            return ChapterRun.model_validate(json.loads(read_text_with_retry(path)))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
 
@@ -110,12 +111,7 @@ class RunLog:
         """原子写一条记录（tmp + os.replace），中途崩溃不会留半截 JSON。"""
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._path(record.order)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(record.model_dump(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(tmp, path)
+        atomic_write_json(path, record.model_dump())
         return path
 
     def list_records(self) -> list[ChapterRun]:
@@ -126,7 +122,7 @@ class RunLog:
         for path in sorted(self.dir.glob("ch*.json")):
             try:
                 records.append(
-                    ChapterRun.model_validate(json.loads(path.read_text(encoding="utf-8")))
+                    ChapterRun.model_validate(json.loads(read_text_with_retry(path)))
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
