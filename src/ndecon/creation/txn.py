@@ -23,6 +23,8 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +61,8 @@ class ChapterOutcome:
     hard_failures: list[str] = field(default_factory=list)
     # 与 hard_failures 同序的可读说明（含实测值），例："偏短：实测 1200 字，目标 2600 字"
     hard_failure_details: list[str] = field(default_factory=list)
+    # 不阻断入库的提示（字数不在目标带等）。界面必须显示，否则用户以为闸门什么都没看。
+    advisories: list[str] = field(default_factory=list)
     sample_quotes: list[str] = field(default_factory=list)
     cost_tokens: int = 0
     error: str = ""
@@ -150,15 +154,48 @@ def run_chapter(
     run_id: str | None = None,
     auto_accept: bool = True,
     max_repairs: int = MAX_REPAIR_ATTEMPTS,
+    length_gate: bool = False,
+    on_phase: Callable[[str, str], None] | None = None,
 ) -> ChapterOutcome:
     """跑一章的事务：生成 → 闸门 → （必要时重写）→ 摘要 → 提交。
 
     ``auto_accept=True``：闸门判定 pass 的章节直接落 ``auto-accepted``，
     不等人确认——这正是全自动连跑的前提（B2 修复的另一半）。
     ``auto_accept=False``：仍落 ``draft``，由人工在面板确认（A3 逐章确认模式）。
+
+    ``length_gate=False``（默认）：字数不达标只记提示、不打回重写。理由见
+    ``ndecon/quality/gates.check_chapter``：模型字数服从度差是模型能力问题，
+    拿它当硬门只会让用户看到「一直不生成」。
+
+    ``on_phase(phase, detail)``：进度回调，每换一个阶段调一次。**它只用于给人看
+    进度**，不参与判定；实现里必须保证回调抛异常不影响章节事务（用户界面出错
+    不能让正在写的这一章白扔）。
     """
     if not 1 <= order <= len(project.draft.chapters):
         raise ValueError(f"第 {order} 章不在细纲范围内（当前共 {len(project.draft.chapters)} 章）")
+
+    def phase(name: str, detail: str = "") -> None:
+        """报一次进度：先落盘（界面从磁盘读），再交给回调；两者都不许炸。
+
+        落盘这一步是必须的：`GET /runs/<id>` 读的是 `ch*.json`，如果只在内存里
+        记阶段，用户刷新页面或换设备就什么都看不到。而且引擎重启后内存任务表
+        是空的，磁盘上的 phase 是唯一能说明「它跑到哪一步死的」的线索。
+        """
+        # 进度落盘失败不能毁掉这一章：磁盘满、文件被占用都发生过。
+        with contextlib.suppress(Exception):
+            run.touch_phase(order, name, detail)
+        # 同时更新内存里这一份：终态是拿它整体覆盖写的，如果不带上，
+        # 失败那一章落盘的 phase 会被清空——而失败章恰恰是最需要
+        # 「死在哪一步」的那一种。
+        record.phase = name
+        record.phase_detail = detail
+        record.phase_at = now_iso()
+        if on_phase is None:
+            return
+        try:
+            on_phase(name, detail)
+        except Exception:  # noqa: BLE001 - 进度显示坏了不能毁掉这一章
+            return
 
     writer = _build_writer(provider, provider_obj)
     target = project.draft.chapters[order - 1]
@@ -173,6 +210,7 @@ def run_chapter(
         started_at=now_iso(),
     )
     run.write(record)  # 1) 断点先落盘
+    phase("context", "拼上下文包")
 
     target_chars = _target_chars(project, order)
     # 摘要已外置到 summaries/chNNN.json：这里只读已写章节的摘要，
@@ -189,12 +227,16 @@ def run_chapter(
     error = ""
     while attempt < max_repairs + 1:
         attempt += 1
+        # 这里是最耗时的阶段（真模型一章 25 秒到几分钟），进度必须说清楚
+        # 「正在写第几次」，否则界面上只有一行「连写中…」，用户分不清是慢还是死。
+        phase("writing", f"第 {attempt} 次生成（目标 {target_chars} 字）")
         try:
             writing = writer.write_chapter(pack)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - provider 异常必须转成记录，不能让进程死
             error = f"章节生成失败：{exc}"
             break
         content = writing.content
+        phase("gate", f"过闸门（正文 {len(content)} 字符）")
         report = check_chapter(
             content,
             target_chars=target_chars,
@@ -203,6 +245,7 @@ def run_chapter(
             # 跨章 AI 味漂移：单章阈值不能当硬门（人类小说与 AI 在单章上完全重叠），
             # 只有连续多章的章级中位数持续偏高才阻断，所以必须带上历史实测值。
             previous_fingerprints=_recent_fingerprints(store, project, order),
+            length_gate=length_gate,
         )
         if report.verdict == "pass":
             break
@@ -231,6 +274,7 @@ def run_chapter(
         # 也不知道该换模型还是改细纲。detail 里带着实测值（"实测 1200 字，
         # 目标 2600 字"），这才是能指导下一步的证据。
         record.gate_details = [f.detail for f in (report.hard_failures if report else [])]
+        record.advisories = list(report.advisories) if report else []
         record.error = error or "超过修复重试上限"
         record.output_hash = content_hash(content) if content else ""
         run.write(record)
@@ -242,6 +286,7 @@ def run_chapter(
             cjk_chars=report.cjk_chars if report else 0,
             hard_failures=record.gate_failures,
             hard_failure_details=record.gate_details,
+            advisories=record.advisories,
             sample_quotes=report.sample_quotes if report else [],
             error=record.error,
             run_id=run.run_id,
@@ -254,6 +299,7 @@ def run_chapter(
     # 是 previous_summary 的唯一来源 —— 缺了就等于模型忘了那几章，闸门却完全
     # 不检查。现在退到机械摘要（不调模型，直接从细纲核心事件 + 正文结尾拼），
     # 保证下一章至少知道"上一章写到哪"。
+    phase("summary", "生成摘要")
     digest = content_hash(content)
     summary = summarize_chapter(writer, order, target.title, content, chapter_hash=digest)
     if summary is not None:
@@ -269,6 +315,7 @@ def run_chapter(
     summary_present = True
 
     # 4) 提交：正文 + 摘要 + project.json 一起落，失败则回滚正文
+    phase("commit", "写正文与游标")
     previous = store.read_manuscript(project.meta.id, order)
     try:
         store.write_manuscript(project.meta.id, order, content)
@@ -313,11 +360,18 @@ def run_chapter(
     record.gate_verdict = report.verdict
     record.soft_scores = report.soft_scores
     record.cjk_chars = report.cjk_chars
+    record.advisories = list(report.advisories)
     record.summary_present = summary_present
     record.summary_source = summary_source
     record.status = "committed"
     record.ended_at = now_iso()
+    # 终态这一章就算跑完了：phase 必须落成 done，否则盘上会一直停在 commit
+    # （touch_phase 对已结算记录是空操作，所以只能在这里直接写）。
+    record.phase = "done"
+    record.phase_detail = f"已提交（{report.cjk_chars} 字）"
+    record.phase_at = record.ended_at
     run.write(record)
+    phase("done", f"已提交（{report.cjk_chars} 字）")
     return ChapterOutcome(
         order=order,
         status="committed",
@@ -326,5 +380,6 @@ def run_chapter(
         cjk_chars=report.cjk_chars,
         summary_present=summary_present,
         summary_source=summary_source,
+        advisories=list(report.advisories),
         run_id=run.run_id,
     )

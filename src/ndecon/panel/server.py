@@ -1121,6 +1121,11 @@ un_server 传 server.jobs），不能在这里新建：
                         continue
                 runs.append({
                     "run_id": run_dir.name,
+                    # 这个 run 现在是不是还在跑：界面靠它找到「正在跑的那一次」，
+                    # 从而在**重新进入项目页**后也能显示进度和暂停按钮。
+                    # 只靠发起连写那次页面的内存 state 是不够的——刷新一次就没了。
+                    "live": live is not None and live.state == JOB_RUNNING,
+                    "job": job_status(store, project_id, run_dir.name, live),
                     "chapters": [
                         {
                             "order": record.get("order"),
@@ -1134,6 +1139,12 @@ un_server 传 server.jobs），不能在这里新建：
                             "summary_source": record.get("summary_source") or "",
                             "hard_failures": record.get("gate_failures") or [],
                             "hard_failure_details": record.get("gate_details") or [],
+                            # 字数提示：这章入库了，但字数不在目标带内。
+                            # 它不是失败，界面必须单独显示，否则用户会以为
+                            # 「字数不达标所以一直不生成」——而事实是它早就写好了。
+                            "advisories": record.get("advisories") or [],
+                            "phase": record.get("phase") or "",
+                            "phase_detail": record.get("phase_detail") or "",
                             "error": record.get("error") or "",
                         }
                         for record in records

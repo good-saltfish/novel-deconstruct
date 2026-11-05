@@ -48,6 +48,16 @@ class ChapterRun(BaseModel):
         description="硬门失败的可读说明（含实测值），与 gate_failures 同序",
     )
     soft_scores: dict[str, float] = Field(default_factory=dict)
+    # 不阻断入库的提示（如字数不在目标带）。和 gate_details 分开存：一个是
+    # 「这章被退回了，因为…」，一个是「这章入库了，但你应该知道…」。混在一起
+    # 会让用户以为所有提示都是失败。
+    advisories: list[str] = Field(default_factory=list, description="不阻断入库的提示")
+    # 当前阶段：writing/gate/summary/commit/done。**给界面看的活进度**。
+    # 只有它能让用户分清「模型在慢慢写」和「卡死了」——ch*.json 的终态要等
+    # 整章跑完才写，中途那几个字段永远是初值。
+    phase: str = Field(default="", description="当前阶段（writing/gate/summary/commit/done）")
+    phase_detail: str = Field(default="", description="当前阶段的可读说明")
+    phase_at: str = Field(default="", description="进入当前阶段的时间")
     attempts: int = Field(default=1, ge=1, description="本章累计尝试次数")
     # 实测汉字数：必须落盘。面板台账读的就是这个字段，缺了它「每章多少字」
     # 永远显示空白 —— 而字数是最直观的质量信号，用户据此判断该不该换模型。
@@ -113,6 +123,28 @@ class RunLog:
         path = self._path(record.order)
         atomic_write_json(path, record.model_dump())
         return path
+
+    def touch_phase(self, order: int, phase: str, detail: str = "") -> None:
+        """只更新某章的当前阶段（不写正文、不动判定）。
+
+        为什么值得单开一个方法：一章真模型要 25 秒到几分钟，而 ``ch*.json``
+        的终态要等整章跑完才写。中途那几分钟里磁盘上什么都没有，界面只能显示
+        「连写中…」——用户分不清是模型在慢慢写还是进程已经死了，于是会去点
+        「重新生成」，撞上「已经有一次连写在跑」。写这个字段就是把
+        「还活着，正在第 N 次生成」变成可读事实。
+
+        写失败一律吞掉：进度显示坏了绝不能毁掉正在写的这一章。
+        """
+        record = self.read(order)
+        if record is None or record.settled:
+            return
+        record.phase = phase
+        record.phase_detail = detail
+        record.phase_at = now_iso()
+        try:
+            self.write(record)
+        except OSError:
+            return
 
     def list_records(self) -> list[ChapterRun]:
         """按章号列出本次连跑的全部记录（跳过损坏文件）。"""

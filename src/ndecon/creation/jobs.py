@@ -70,6 +70,14 @@ class BatchJob:
     ended_at: str = ""
     chapters: list[dict] = field(default_factory=list)
     pause_requested: bool = False
+    # 当前正在写第几章、处在哪一步、什么时候开始的。
+    # 这三个字段存在的唯一理由：让界面能回答「现在在干嘛、干了多久」。
+    # 没有它们，用户面对的只有「连写中…」四个字，而一章真模型要几分钟——
+    # 于是他会以为卡死了，去点「重新生成」，撞上「已经有一次连写在跑」。
+    current_order: int = 0
+    current_phase: str = ""
+    current_detail: str = ""
+    current_since: str = ""
 
     @property
     def total(self) -> int:
@@ -189,6 +197,19 @@ class JobRegistry:
                     job.error = "项目已不存在或不再是创作项目"
                     job.state = JOB_STOPPED
                     break
+                # 进度回调：把「现在在第几章、哪一步」写进内存任务对象。
+                # 每章调好几次，界面轮询 2 秒一次就能看到它动 —— 这是
+                # 「慢」和「死」之间唯一的区别。
+                def on_phase(name: str, detail: str, *, _order: int = order) -> None:
+                    job.current_order = _order
+                    job.current_phase = name
+                    job.current_detail = detail
+                    job.current_since = now_iso()
+
+                job.current_order = order
+                job.current_phase = "start"
+                job.current_detail = f"第 {order} 章开始"
+                job.current_since = now_iso()
                 outcome = run_chapter(
                     store,
                     fresh,
@@ -198,6 +219,7 @@ class JobRegistry:
                     run_id=job.run_id,
                     auto_accept=auto_accept,
                     max_repairs=max_repairs,
+                    on_phase=on_phase,
                 )
                 job.chapters.append({
                     "order": outcome.order,
@@ -209,6 +231,7 @@ class JobRegistry:
                     "summary_source": outcome.summary_source,
                     "hard_failures": outcome.hard_failures,
                     "hard_failure_details": outcome.hard_failure_details,
+                    "advisories": outcome.advisories,
                     "error": outcome.error,
                 })
                 if outcome.committed:
@@ -219,6 +242,8 @@ class JobRegistry:
                     # 硬写下去只会把整本写坏，所以停下。
                     job.state = JOB_STOPPED
                     break
+                job.current_phase = "done"
+                job.current_detail = f"第 {order} 章已提交"
             else:
                 job.state = JOB_FINISHED
         except Exception as exc:  # noqa: BLE001 - 后台线程不能让异常逃出去
@@ -226,6 +251,7 @@ class JobRegistry:
             job.state = JOB_STOPPED
         finally:
             job.ended_at = now_iso()
+            job.current_phase = "done" if job.state == JOB_FINISHED else job.current_phase
             # 把终态写进 run 目录：引擎重启后内存任务表是空的，光看 ch*.json
             # 分不清「用户点了暂停」和「半路崩了」——两者都表现为「写了几章就没了」。
             _write_job_state(store, job)
@@ -294,6 +320,11 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
             "started_at": job.started_at,
             "ended_at": job.ended_at,
             "pause_requested": job.pause_requested,
+            # 活进度：界面靠这四个字段回答「现在在干嘛、干了多久」。
+            "current_order": job.current_order,
+            "current_phase": job.current_phase,
+            "current_detail": job.current_detail,
+            "current_since": job.current_since,
         }
 
     # 磁盘推断：任务不在内存里（引擎重启过，或这是上一次会话的 run_id）。
@@ -351,6 +382,9 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
     else:
         state = JOB_FINISHED
         saved_error = ""
+    # 最后一条记录承载「跑到哪一步」：phase 由 txn 在每步开头落盘，
+    # 所以即使引擎重启，这里也能说出「中断在第 N 章的生成阶段」。
+    last = records[-1] if records else None
     return {
         "run_id": run_id,
         "status": state,
@@ -370,6 +404,7 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
                 "summary_source": rec.summary_source,
                 "hard_failures": rec.gate_failures,
                 "hard_failure_details": rec.gate_details,
+                "advisories": rec.advisories,
                 "error": rec.error,
             }
             for rec in records
@@ -383,6 +418,13 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
         "started_at": records[0].started_at,
         "ended_at": records[-1].ended_at,
         "pause_requested": False,
+        # 活进度只能从磁盘上最后一条记录读回来：引擎重启后内存任务表是空的，
+        # 但那一章「死在哪一步」还写在 ch*.json 里。没有这一步，界面只能说
+        # 「中断」，说不出「中断在第 13 章生成阶段」。
+        "current_order": last.order if last else 0,
+        "current_phase": last.phase if last else "",
+        "current_detail": last.phase_detail if last else "",
+        "current_since": last.phase_at if last else "",
     }
 
 

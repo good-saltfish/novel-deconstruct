@@ -126,6 +126,11 @@ class GateReport(BaseModel):
     hard_failures: list[GateFailure] = Field(default_factory=list)
     soft_scores: dict[str, float] = Field(default_factory=dict, description="软门只记分，不阻断")
     sample_quotes: list[str] = Field(default_factory=list, description="最值得人看的两三句原文")
+    # 软门提示：和 hard_failures 一样是可读结论，但**不阻断入库**。
+    # 字数不足是这里唯一会出现的常客（见 check_chapter 的 length_gate 说明）。
+    advisories: list[str] = Field(
+        default_factory=list, description="不阻断入库、但值得人知道的问题"
+    )
 
     @property
     def passed(self) -> bool:
@@ -385,8 +390,19 @@ def check_chapter(
     summary_present: bool = True,
     fingerprint_report: object | None = None,
     previous_fingerprints: list[dict[str, float]] | None = None,
+    length_gate: bool = False,
 ) -> GateReport:
     """对一章正文跑全部硬门与软门，返回判定报告（不改写正文）。
+
+    ``length_gate=False``（默认）时**字数不是硬门**，只记一条 advisory。
+
+    为什么默认不硬拦（实测事故）：用户原话是「规则先不要定太死，先让我测试能不能
+    生成就行（可以设置要求：比如字数要求什么的 有没有可能是字数不达标导致一直
+    不生成 这是不对的）」。现场就是如此——`glm-5.3-flash` 三轮实测给
+    1576/1640/1897 字，全部 `finish_reason=stop`（不是被截断，是模型就是不肯写更长），
+    于是每章都被字数硬门打回、重写两次仍偏短、整章丢弃，用户看到的是「一直不生成」。
+    而字数不够**并不等于这一章不能用**：2475 字的正文照样连贯可读。
+    所以默认把字数降级为软门（advisory），想严的时候由调用方显式打开。
 
     ``summary_present=False`` 时记一条 coverage 硬门失败：没有摘要的章节进不了
     检索索引，后续章节就会"忘掉"这一章——这正是全自动长篇最常见的断链方式。
@@ -398,9 +414,17 @@ def check_chapter(
     """
     previous_texts = previous_texts or []
     hard: list[GateFailure] = []
+    advisories: list[str] = []
+
+    length_failure = _check_word_count(text, target_chars)
+    if length_failure is not None:
+        if length_gate:
+            hard.append(length_failure)
+        else:
+            # 只提示、不阻断：把实测值和允许区间原样带出来，人一看就知道差多少。
+            advisories.append(f"字数不在目标带内（{length_failure.detail}）")
 
     for failure in (
-        _check_word_count(text, target_chars),
         _check_truncation(text),
         _check_repeats(text),
         _check_self_reference(text),
@@ -474,4 +498,5 @@ def check_chapter(
         hard_failures=hard,
         soft_scores=soft,
         sample_quotes=sample_quotes,
+        advisories=advisories,
     )

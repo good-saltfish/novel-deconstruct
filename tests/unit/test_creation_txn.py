@@ -158,16 +158,26 @@ class _GoodWriter(FakeChapterWriter):
 
 
 def test_gate_verdicts() -> None:
-    """硬门：字数带、截断、复读、工程词、占位符、乱码都要拦；软门只记分。"""
+    """硬门：截断、复读、工程词、占位符、乱码都要拦；软门只记分。"""
     good = _long_text(2600)
     report = check_chapter(good, target_chars=2600)
     assert report.verdict == "pass"
     assert report.cjk_chars >= 2200
     assert "freshness" in report.soft_scores
+    assert report.advisories == []
 
+    # 字数默认**不是**硬门：实测 glm-5.3-flash 三档 max_tokens 只给 1576/1640/1897 字
+    # 且 finish_reason=stop（不是截断），按硬门判就会重写两次仍偏短、整章丢弃，
+    # 用户看到的是「一直不生成」。所以默认只记提示、照样入库。
     short = check_chapter(_long_text(1200), target_chars=2600)
-    assert any(f.rule == "chapter_length" for f in short.hard_failures)
-    assert short.verdict == "repair"
+    assert short.verdict == "pass"
+    assert short.hard_failures == []
+    assert any("字数不在目标带内" in note for note in short.advisories)
+
+    # 但显式要求时可恢复成硬门：想严格控字数的地方必须能拦。
+    strict = check_chapter(_long_text(1200), target_chars=2600, length_gate=True)
+    assert any(f.rule == "chapter_length" for f in strict.hard_failures)
+    assert strict.verdict == "repair"
 
     truncated = check_chapter(good.rstrip("。")[:-1], target_chars=2600)
     assert any(f.rule == "truncated" for f in truncated.hard_failures)
@@ -270,21 +280,51 @@ def test_run_chapter_rolls_back_on_reject(tmp_path, monkeypatch) -> None:
 
 
 def test_run_chapter_retries_with_evidence_then_degrades(tmp_path, monkeypatch) -> None:
-    """一直不过门的章：按上限重试，最终标失败，绝不无限重试。"""
+    """一直不过门的章：按上限重试，最终标失败，绝不无限重试。
+
+    这里用**占位正文**（带 PLACEHOLDER_BANNER）而不是单纯偏短的正文：字数默认
+    已降级成提示（见 test_gate_verdicts），只有占位符这种「内容根本不可用」的
+    问题才该真的把章退回去重写。
+    """
     store = _store(tmp_path)
     project = _project(store)
-    writer = _GoodWriter(_long_text(1200))  # 永远偏短
+    writer = _GoodWriter(_long_text(1200) + "\n\n【待填】")
     monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
 
     outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=1)
     assert outcome.status == "rolled_back"  # 生成过但没敢入库，不等于异常失败
     assert outcome.attempts == 2  # 1 次首写 + 1 次修复
     assert writer.calls == 2
-    assert any(rule == "chapter_length" for rule in outcome.hard_failures)
-    # 只记规则名等于没记：必须带实测字数，否则用户看到「第 1 章 repair」
+    assert any(rule == "placeholder" for rule in outcome.hard_failures)
+    # 只记规则名等于没记：必须带实测值，否则用户看到「第 1 章 repair」
     # 既不知道差多少，也不知道该换模型还是调目标字数。
     assert outcome.hard_failure_details, "硬门失败必须带可读说明"
-    assert any("实测" in detail and "2600" in detail for detail in outcome.hard_failure_details)
+
+
+def test_short_chapter_is_committed_with_advisory(tmp_path, monkeypatch) -> None:
+    """写不够字数的章**照样入库**，只是带一条提示。
+
+    用户的原话：「有没有可能是字数不达标导致一直不生成 这是不对的」。
+    实测 glm-5.3-flash 三档预算只给 1576/1640/1897 字、全部 finish_reason=stop，
+    按硬门判就会重写两次仍偏短、整章丢弃 —— 界面上就是「一直不生成」。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _GoodWriter(_long_text(1200))  # 永远偏短，但内容干净
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=1)
+    assert outcome.status == "committed"
+    assert outcome.attempts == 1  # 不该为了字数反复重写
+    assert writer.calls == 1
+    assert outcome.cjk_chars > 0
+    assert outcome.advisories, "字数不在带内必须留下提示，否则用户以为闸门什么都没看"
+    assert any("字数不在目标带内" in note for note in outcome.advisories)
+
+    # 提示要落到台账（ch*.json）里，界面才能显示。
+    record = RunLog(store.projects_dir / project.meta.id, outcome.run_id).read(1)
+    assert record is not None
+    assert record.advisories == outcome.advisories
 
 
 def test_repair_feedback_lands_in_prompt() -> None:
