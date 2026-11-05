@@ -23,25 +23,6 @@ from ndecon.retrieval.context import ContextPack
 
 CHAPTER_PROMPT_VERSION = "cw-v0"
 
-# 单章请求的输出预算：目标字数 × 2 + 1024。
-#
-# 为什么不是「刚好等于目标字数」：模型**看不到** max_tokens（OpenAI 协议里它
-# 只是服务端的截断上限，不进 prompt），所以这个值唯一的作用是「别在写到一半
-# 时被砍」。中文一个字大约 1–1.5 token（分词器而异），正文外面还包着 JSON 与
-# 自评字段，取 2 倍再留 1024 的余量，2600 字目标约 6240 token。
-#
-# 为什么不干脆不给：不给就用上游默认上限。实测有中转站默认只给 2048，一章
-# 2600 字必然被砍在中间，闸门判「生成被截断」，重写两次还是砍在同一处——
-# 用户看到的是「这个模型写不完一章」，其实是预算被上游悄悄限死了。
-CHAPTER_MAX_TOKENS_FACTOR = 2
-CHAPTER_MAX_TOKENS_FLOOR = 1024
-
-
-def chapter_max_tokens(target_chars: int) -> int:
-    """按目标字数算输出预算；非正数目标时退化为固定下限。"""
-    base = max(0, int(target_chars))
-    return base * CHAPTER_MAX_TOKENS_FACTOR + CHAPTER_MAX_TOKENS_FLOOR
-
 # 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
 CHAPTER_SCENE_SEED = 20261101
 CHAPTER_SCENE_SEED_STEP = 7919
@@ -361,11 +342,11 @@ class OpenAICompatChapterWriter:
             {"role": "user", "content": chapter_user_message(pack)},
         ]
         # 同包复用内部 JSON 通道，避免重复造传输栈。
-        # 预算按本章目标字数给足：不给的话上游默认上限可能只够写半章，
-        # 被截断后重写两次仍截在同一处，看起来像「模型写不完一章」。
-        data = self._provider._chat_json(  # noqa: SLF001
-            messages, max_tokens=chapter_max_tokens(pack.target_chars)
-        )
+        # **不设 max_tokens**：推理型模型会把预算全花在 reasoning 上，正文一个字
+        # 都留不下（实测 sensenova 与 aliyun 各 6224 token 全进 reasoning_tokens、
+        # text_tokens=0、finish_reason=length）。预算越大推理也越长，这是模型的
+        # 自由，算不准；不设上限时上游按模型默认放行，推理完还有空间写正文。
+        data = self._provider._chat_json(messages)  # noqa: SLF001
         try:
             content = str(data["content"]).strip()
             if not content:

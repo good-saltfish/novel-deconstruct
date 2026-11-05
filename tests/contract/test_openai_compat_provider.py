@@ -348,11 +348,13 @@ def test_parse_json_does_not_pretend_truncated_object_is_ok() -> None:
         OpenAICompatProvider._parse_json('{"content": "正文", "review": {"hook_strength": 5')
 
 
-# ---------- 输出预算（max_tokens）----------
+# ---------- 输出预算：一律不设 ----------
 #
-# 这三条钉住的是「预算怎么传出去」，不是「模型写多少字」。为什么值得单独测：
-# 不传 max_tokens 时上游用自己的默认上限，实测有中转站默认只给 2048，
-# 一章 2600 字必然被砍在中间，闸门判「生成被截断」，重写两次仍砍在同一处。
+# 用户 2026-11-05 定案「不要设置预算上限」。实测反例钉在这里：
+# 给 6224 预算时 sensenova 与 aliyun 的推理型模型把 6224 token 全花在
+# reasoning 上（`completion_tokens_details.reasoning_tokens = 6224`、
+# `text_tokens = 0`），正文一个字都没留下、`finish_reason=length`。
+# 预算越大推理也越长，算不准，所以请求体里根本不该出现这个字段。
 
 
 def _request_body(request: httpx.Request) -> dict:
@@ -362,42 +364,76 @@ def _request_body(request: httpx.Request) -> dict:
     return _json.loads(request.content)
 
 
-def test_no_max_tokens_field_by_default() -> None:
-    """实例未指定预算时，请求体里不应出现 max_tokens（交给上游默认）。"""
+def test_no_max_tokens_field_is_ever_sent() -> None:
+    """无论写正文还是摘要，请求体里都不应出现 max_tokens。"""
     provider, seen = _make_provider(lambda _r: _chat_response(_summary_payload()))
     provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h" * 8)
-    assert "max_tokens" not in _request_body(seen[0])
+    provider._chat_json([{"role": "user", "content": "写一章"}])  # noqa: SLF001
+    assert all("max_tokens" not in _request_body(request) for request in seen)
 
 
-def test_instance_budget_is_sent() -> None:
-    """实例级预算要落到请求体里。"""
-    provider = OpenAICompatProvider(
-        api_key="test-key",
-        base_url="https://api.test/v1",
-        model="test-model",
-        max_tokens=4096,
-        transport=httpx.MockTransport(lambda _r: _chat_response(_summary_payload())),
-        sleeper=lambda _s: None,
+def test_provider_has_no_budget_parameter() -> None:
+    """构造器不该再接受 max_tokens——留着参数就会有人又把它传进来。"""
+    import inspect
+
+    signature = inspect.signature(OpenAICompatProvider.__init__)
+    assert "max_tokens" not in signature.parameters
+
+
+# ---------- 推理把预算吃光时的报错 ----------
+#
+# 这是 2026-11-05 的真实故障，两个 provider 两种表现，必须报成同一件事：
+# sensenova 的 message 里**根本没有 content 键**（只有 reasoning），
+# aliyun 是 content='' 且 reasoning_content 9823 字符。两者的
+# `completion_tokens_details.reasoning_tokens` 都等于 max_tokens、text_tokens=0。
+# 原先报成「响应结构不符合 chat/completions 约定：'content'」，
+# 把人引去查兼容性；真实原因是预算被推理吃掉。
+
+
+def _reasoning_only_response(*, with_content_key: bool) -> httpx.Response:
+    """构造「推理吃光预算」的真实响应形状。"""
+    message: dict = {"role": "assistant", "reasoning": "（推理过程）" * 100}
+    if with_content_key:
+        message["content"] = ""
+        message["reasoning_content"] = "（推理过程）" * 100
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": message, "finish_reason": "length"}],
+            "usage": {
+                "completion_tokens": 6224,
+                "completion_tokens_details": {"reasoning_tokens": 6224, "text_tokens": 0},
+            },
+        },
     )
-    provider.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h" * 8)
-    assert provider.max_tokens == 4096
 
 
-def test_per_call_budget_overrides_instance() -> None:
-    """单次调用的预算覆盖实例默认值——写正文要按本章目标字数单独算。"""
-    seen: list[httpx.Request] = []
+def test_reasoning_exhausted_budget_is_reported_as_budget_not_schema() -> None:
+    """推理吃光预算要报「预算被推理吃掉」，不能报成响应结构不符。"""
+    for with_content_key in (False, True):
+        # 默认参数绑定当前值：lambda 直接闭包循环变量会被 ruff 判为晚绑定。
+        provider, _ = _make_provider(
+            lambda _r, has_key=with_content_key: _reasoning_only_response(with_content_key=has_key)
+        )
+        with pytest.raises(ProviderResponseError) as excinfo:
+            provider._chat_json([{"role": "user", "content": "写一章"}])  # noqa: SLF001
+        message = str(excinfo.value)
+        assert "推理" in message and "预算" in message
+        assert "响应结构不符合" not in message
+        assert "reasoning_tokens=6224" in message
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return _chat_response({"content": "正文", "review": {}})
 
-    provider = OpenAICompatProvider(
-        api_key="test-key",
-        base_url="https://api.test/v1",
-        model="test-model",
-        max_tokens=2048,
-        transport=httpx.MockTransport(handler),
-        sleeper=lambda _s: None,
+def test_missing_content_key_without_reasoning_tokens_explains_fields() -> None:
+    """没有 content 键但也不是预算耗尽时，要列出实际有哪些字段。"""
+    provider, _ = _make_provider(
+        lambda _r: httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant"}, "finish_reason": "stop"}]},
+        )
     )
-    provider._chat_json([{"role": "user", "content": "写一章"}], max_tokens=6240)  # noqa: SLF001
-    assert _request_body(seen[0])["max_tokens"] == 6240
+    with pytest.raises(ProviderResponseError) as excinfo:
+        provider._chat_json([{"role": "user", "content": "写一章"}])  # noqa: SLF001
+    message = str(excinfo.value)
+    assert "message.content" in message
+    assert "role" in message
+    assert "finish_reason=stop" in message

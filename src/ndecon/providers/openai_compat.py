@@ -233,18 +233,10 @@ class OpenAICompatProvider:
         model: str | None = None,
         timeout: float | None = None,
         max_attempts: int = 4,
-        max_tokens: int = 0,
         transport: httpx.BaseTransport | None = None,
         sleeper=time.sleep,
     ) -> None:
-        """从显式参数或环境变量读取配置；缺少 key 时立即报配置错误。
-
-        ``max_tokens`` 为 0 表示不指定（沿用上游默认上限）。指定它是为了
-        **让模型知道预算边界**：不指定时宿主按模型默认上限放行（实测有的
-        中转站给到 128k），模型看不到任何「你只有这么多空间」的提示，于是
-        写完 1300 字就自己收尾——而闸门按 2600±15% 判，必被打回重写。
-        写正文时由 chapter writer 传入一个略高于目标字数的值。
-        """
+        """从显式参数或环境变量读取配置；缺少 key 时立即报配置错误。"""
         self.api_key = (
             api_key
             or os.getenv("NOVEL_DECON_API_KEY")
@@ -263,7 +255,6 @@ class OpenAICompatProvider:
                 "缺少 API key：请设置环境变量 NOVEL_DECON_API_KEY 或 OPENAI_API_KEY"
             )
         self.max_attempts = max_attempts
-        self.max_tokens = max(0, int(max_tokens))
         self._sleeper = sleeper
         # 超时值要留成属性：报错文案里必须写出实际秒数与怎么改，
         # 只写「timed out」用户无从判断是模型慢还是引擎挂了。
@@ -283,7 +274,7 @@ class OpenAICompatProvider:
 
     # ---------- 传输层 ----------
 
-    def _post_chat(self, messages: list[dict], *, max_tokens: int | None = None) -> str:
+    def _post_chat(self, messages: list[dict]) -> str:
         """发起一次 chat/completions 请求并返回文本内容；按状态码分类错误。
 
         传输层异常（读超时、连接重置、网络不可达）必须在这里收成
@@ -292,13 +283,14 @@ class OpenAICompatProvider:
         插件侧只能看到 `fetch failed`，于是界面上报的是「无法连接引擎」——
         把「模型慢/超时」误报成「引擎挂了」，排查方向会被带偏很远。
 
-        ``max_tokens`` 逐次覆盖实例默认值。写正文必须显式给足：不指定时
-        上游按自己的默认上限截断（实测有中转站默认只给 2048），一章 2600 字
-        写到一半被砍，闸门判「生成被截断」，重写两次还是砍在同一处。
-        注意它**不会**让模型写得更长——模型看不到这个字段，它只决定在哪儿
-        被砍；字数服从度是 prompt 的事（见 `chapter_user_message`）。
+        **不指定 `max_tokens`**（用户 2026-11-05 定案）。实测反例：给
+        6224 预算时 sensenova 与 aliyun 的推理型模型把 6224 token 全花在
+        reasoning 上（`completion_tokens_details.reasoning_tokens = 6224`、
+        `text_tokens = 0`），正文一个字都没留下，`finish_reason=length`。
+        给多少预算都可能被推理吃光——预算越大推理也越长，这是模型的
+        自由，不是我们能算准的数。不设上限时由上游按模型默认放行，
+        推理写完后仍有空间写正文。
         """
-        budget = self.max_tokens if max_tokens is None else max(0, int(max_tokens))
 
         def _request() -> str:
             body: dict = {
@@ -307,8 +299,6 @@ class OpenAICompatProvider:
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
             }
-            if budget > 0:
-                body["max_tokens"] = budget
             try:
                 response = self._client.post(f"{self.base_url}/chat/completions", json=body)
             except httpx.TimeoutException as exc:
@@ -346,15 +336,54 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _extract_content(response: httpx.Response) -> str:
-        """从标准响应体取出首条消息文本；结构异常按响应错误处理。"""
+        """从标准响应体取出首条消息文本；结构异常按响应错误处理。
+
+        `content` 缺失或为空有两种完全不同的原因，必须分开报：
+
+        1. **推理把预算吃光了**：`finish_reason=length` 且
+           `completion_tokens_details.reasoning_tokens` 用满了预算、`text_tokens=0`。
+           实测 sensenova 的 message 里**根本没有 `content` 键**（只有 `reasoning`），
+           aliyun 是 `content=''` 且 `reasoning_content` 9823 字符。这是模型的
+           预算分配，不是链路断、也不是响应结构坏了——报成
+           「响应结构不符合约定：'content'」会把人引到查兼容性上去。
+        2. 其它：真的返回了空内容。
+
+        两条都必须报成可行动的话：换一个不先长推理的模型、或让这个模型
+        继续（不设预算时它推理完还有空间写正文）。
+        """
         try:
             payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise ProviderResponseError(f"响应结构不符合 chat/completions 约定：{exc}") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise ProviderResponseError("上游返回了空内容")
-        return content
+
+        message = choice.get("message") or {}
+        content = message.get("content")
+        usage = payload.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens")
+        text_tokens = details.get("text_tokens")
+        finish = choice.get("finish_reason")
+
+        if isinstance(content, str) and content.strip():
+            return content
+
+        if finish == "length" and isinstance(reasoning_tokens, int) and reasoning_tokens > 0:
+            raise ProviderResponseError(
+                f"模型的推理把输出预算用光了，正文一个字都没写出来"
+                f"（finish_reason=length，reasoning_tokens={reasoning_tokens}，"
+                f"text_tokens={text_tokens}）。这不是链路不通，是预算被推理吃掉；"
+                "换一个不先长推理的模型，或去掉 max_tokens 上限让它推理完还能继续写"
+            )
+        if not isinstance(content, str):
+            keys = "、".join(sorted(message.keys())) or "空"
+            raise ProviderResponseError(
+                f"响应里没有 message.content（实际字段：{keys}，finish_reason={finish}）。"
+                "多半是推理型模型把内容放在了别的字段；换一个模型试试"
+            )
+        raise ProviderResponseError(
+            f"上游返回了空内容（finish_reason={finish}，completion_tokens={usage.get('completion_tokens')}）"
+        )
 
     @staticmethod
     def _parse_json(content: str) -> dict:
@@ -395,9 +424,9 @@ class OpenAICompatProvider:
             return data
         raise ProviderResponseError(f"模型未返回合法 JSON：{first_error}") from first_error
 
-    def _chat_json(self, messages: list[dict], *, max_tokens: int | None = None) -> dict:
-        """请求并解析为 JSON 对象；``max_tokens`` 语义同 ``_post_chat``。"""
-        return self._parse_json(self._post_chat(messages, max_tokens=max_tokens))
+    def _chat_json(self, messages: list[dict]) -> dict:
+        """请求并解析为 JSON 对象。"""
+        return self._parse_json(self._post_chat(messages))
 
     def close(self) -> None:
         """关闭底层 HTTP 连接池。"""
