@@ -45,7 +45,8 @@ from ndecon.creation.plan_providers import (
     PlanError,
 )
 from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
-from ndecon.creation.summarize import content_hash, summarize_chapter
+from ndecon.creation.runlog import RunLog
+from ndecon.creation.summarize import backfill_summaries, content_hash, summarize_chapter
 from ndecon.creation.txn import MAX_REPAIR_ATTEMPTS, run_chapter
 from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
@@ -283,6 +284,8 @@ un_server 传 server.jobs），不能在这里新建：
                     self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/accept-skeleton"):
                 self._accept_skeleton(path.split("/")[3], payload)
+            elif path.startswith("/api/projects/") and path.endswith("/summaries/backfill"):
+                self._backfill_summaries(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/generate"):
                 self._generate(path.split("/")[3], payload)
             elif path.startswith("/api/projects/") and path.endswith("/agent/runs"):
@@ -960,6 +963,48 @@ un_server 传 server.jobs），不能在这里新建：
 
         # ---- 章节正文（#16）----
 
+        def _backfill_summaries(self, project_id: str, payload: dict) -> None:
+            """把「正文已落盘、摘要缺失」的章一次性补齐（存量修复，不重写已有摘要）。
+
+            为什么需要它：章事务里的机械兜底只在**生成当时**生效，盘上已有的缺口
+            永远不会被补。用户真实项目 12 章正文全在，但 ch001/ch006-ch009 没有摘要，
+            于是每写下一章 ``previous_summary`` 都是空的——模型忘一章，闸门不检查。
+
+            请求体：
+              - ``dry_run: true`` 只列出缺口，不写盘（默认 false）；
+              - ``provider: "ai"`` 用当前已配置模型产摘要，失败自动退机械兜底；
+                不传就是纯机械兜底（不调模型、零成本、不依赖可用模型）。
+            """
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目才有章节摘要")
+                return
+
+            dry_run = bool(payload.get("dry_run", False))
+            provider_name = str(payload.get("provider", "") or "").strip()
+            writer: object | None = None
+            if provider_name in ("ai", "openai-compat"):
+                resolved = self._resolve_provider(provider_name)
+                if resolved is None:
+                    return
+                _, provider_obj = resolved
+                writer = OpenAICompatChapterWriter(provider_obj)  # type: ignore[arg-type]
+
+            results = backfill_summaries(store, project, writer=writer, dry_run=dry_run)
+            self._send_json(
+                200,
+                {
+                    "backfilled": results,
+                    "count": len(results),
+                    "dry_run": dry_run,
+                    "cursor": project.cursor,
+                },
+            )
+
         def _load_project_summaries(self, project_id: str) -> list[ChapterSummary]:
             """从 summaries/ 目录加载本书全部章节摘要（摘要已外置，按需读取）。"""
             items: list[ChapterSummary] = []
@@ -1059,6 +1104,15 @@ un_server 传 server.jobs），不能在这里新建：
             for run_dir in sorted(runs_dir.iterdir()):
                 if not run_dir.is_dir():
                     continue
+                # 死记录先回收：内存里没有这个任务，说明写它的线程已经没了。
+                # 不回收的话台账会永远显示「这一章在跑」——那是一条既不会完成、
+                # 也不会重跑、还每次打开都能看见的陈年事故。
+                live = job_registry.get(run_dir.name)
+                log = RunLog(runs_dir.parent, run_dir.name)
+                if live is None:
+                    log.reclaim_stale(
+                        reason="引擎重启/退出导致这一章没有跑完，已回收为失败"
+                    )
                 records = []
                 for path in sorted(run_dir.glob("ch*.json")):
                     try:

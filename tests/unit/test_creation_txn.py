@@ -326,9 +326,10 @@ def test_prompt_states_target_length() -> None:
     brief = context_brief(pack)
     assert "本章目标字数" in brief
     assert "2600" in brief
-    # 可接受区间与闸门的 0.85/1.15 不同口径是刻意的：prompt 给更紧的 ±10%，
-    # 留出一点余量，模型落在 2340-2860 时闸门必然通过。
-    assert "2340" in brief and "2860" in brief
+    # 必须与闸门同一口径：prompt 说 2340-2860 而闸门按 0.85/1.15 判 2210-2989，
+    # 等于让模型写一个比它被检查的区间更窄的带 —— prompt 在骗模型。
+    assert "2210" in brief and "2989" in brief
+    assert "2340" not in brief and "2860" not in brief
 
 
 def test_prompt_omits_length_when_target_unknown() -> None:

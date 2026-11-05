@@ -28,6 +28,17 @@ CHAPTER_TARGET_CHARS_DEFAULT = 2600
 WORD_BAND_LOW = 0.85
 WORD_BAND_HIGH = 1.15
 
+
+def word_band(target: int) -> tuple[int, int]:
+    """返回某章目标字数对应的可接受区间（闭区间）。
+
+    为什么单独抽一个函数：prompt 里写给模型的区间和闸门真正判的区间**必须**是
+    同一个。原来 prompt 说「±10%（2340-2860）」，闸门按 0.85/1.15 判（2210-2989）
+    —— 模型被要求写 2340 以上，而闸门 2210 就放行，等于让模型按一个不存在的
+    标准努力，同时把「闸门到底允许多少」这件事对模型隐瞒。判据只能有一处。
+    """
+    return int(target * WORD_BAND_LOW), int(target * WORD_BAND_HIGH)
+
 # 退化检测阈值（对齐 oh-story 的 check-degeneration.js，数值取其保守一侧）
 REPEAT_MIN_LEN = 12
 REPEAT_MIN_COUNT = 3
@@ -138,8 +149,7 @@ def _evidence(text: str, limit: int = 3, width: int = 40) -> list[str]:
 def _check_word_count(text: str, target: int) -> GateFailure | None:
     """硬门 1：字数必须落在目标的 ±15% 带内。"""
     actual = _cjk_count(text)
-    low = int(target * WORD_BAND_LOW)
-    high = int(target * WORD_BAND_HIGH)
+    low, high = word_band(target)
     if low <= actual <= high:
         return None
     direction = "偏短" if actual < low else "偏长"

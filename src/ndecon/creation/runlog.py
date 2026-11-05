@@ -139,3 +139,34 @@ class RunLog:
     def total_cost_tokens(self) -> int:
         """本次连跑累计 token——预算硬停的输入。"""
         return sum(rec.cost_tokens for rec in self.list_records())
+
+    def reclaim_stale(self, *, reason: str, current_run_id: str | None = None) -> list[int]:
+        """把已中断的 ``in_progress`` 记录结算成 ``failed``，返回被回收的章号。
+
+        为什么必须做这件事（实测现场）：用户项目里有两份 ``ch13.json``
+        永远停在 ``in_progress``、``verdict=pass``、``cjk_chars=0``——那一次引擎
+        被外部杀掉，章事务没跑完。这条记录**不会自己消失**：
+
+        - ``settled`` 永远 False，面板台账就一直显示「一章在跑」；
+        - 它又不是可重跑的断点（正文根本没落盘，游标也没动）；
+        - 于是每次打开台账，用户看到的都是同一件陈年事故。
+
+        判据是机械的：**进程已经不在跑了**（``current_run_id`` 是内存里真正在跑
+        的那一个，不是它就是死记录），且状态还是 ``in_progress``。这不是猜，
+        是「谁在写这条记录」的唯一真相——内存任务表。
+
+        回收只改记录状态，**绝不重写正文、绝不动游标**：那章的正文要么根本没写，
+        要么已被下一次重跑覆盖，都不该由这里碰。
+        """
+        reclaimed: list[int] = []
+        for record in self.list_records():
+            if record.settled:
+                continue
+            if current_run_id is not None and record.run_id == current_run_id:
+                continue  # 这一章正在被活着的线程写，别碰
+            record.status = "failed"
+            record.ended_at = now_iso()
+            record.error = reason
+            self.write(record)
+            reclaimed.append(record.order)
+        return reclaimed

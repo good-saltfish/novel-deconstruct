@@ -118,3 +118,78 @@ def mechanical_summary(
         plot_points=[],
         characters=[],
     )
+
+
+def missing_summary_orders(store: object, project_id: str, cursor: int) -> list[int]:
+    """列出「正文已落盘但摘要缺失」的章号（按升序）。
+
+    为什么需要它：机械兜底只在**生成当时**生效。已经在盘上的缺口永远不会补——
+    用户真实项目里 12 章正文全在，而 ch001/ch006/ch007/ch008/ch009 五章没有摘要，
+    每次写下一章时 ``previous_summary`` 都是空的。摘要不是附带元数据，它是
+    ``previous_summary`` 的唯一来源：缺一章就是模型忘一章，而闸门完全不检查。
+    """
+    have = {int(payload.get("order") or 0) for payload in store.list_summaries(project_id)}  # type: ignore[attr-defined]
+    gaps: list[int] = []
+    for order in range(1, max(0, int(cursor)) + 1):
+        if order in have:
+            continue
+        content = store.read_manuscript(project_id, order)  # type: ignore[attr-defined]
+        if content and content.strip():
+            gaps.append(order)
+    return gaps
+
+
+def backfill_summaries(
+    store: object,
+    project: object,
+    *,
+    writer: object | None = None,
+    dry_run: bool = False,
+) -> list[dict]:
+    """扫描全书，把「正文有、摘要没有」的章一次性补齐（存量修复）。
+
+    ``writer`` 给了就走模型摘要（失败自动退机械兜底）；没给就直接机械兜底，
+    不调模型——用户可能根本没有可用模型，而连续性不能等模型。
+    返回每章的处理结果，供面板与 CLI 显示到底补了什么、用的哪种来源。
+
+    只补缺口，**绝不重写已有摘要**：已有摘要可能带 plot_points 与证据引用，
+    用机械摘要覆盖它等于把信息降级，这是比缺失更糟的事。
+    """
+    orders = missing_summary_orders(store, project.meta.id, project.cursor)  # type: ignore[attr-defined]
+    titles = {
+        int(getattr(item, "order", 0)): str(getattr(item, "title", "") or "")
+        for item in getattr(getattr(project, "draft", None), "chapters", []) or []
+    }
+    core_events = {
+        int(getattr(item, "order", 0)): str(getattr(item, "core_event", "") or "")
+        for item in getattr(getattr(project, "draft", None), "chapters", []) or []
+    }
+    results: list[dict] = []
+    for order in orders:
+        content = store.read_manuscript(project.meta.id, order)  # type: ignore[attr-defined]
+        if not content or not content.strip():
+            continue
+        title = titles.get(order) or f"第{order}章"
+        summary = None
+        source = "mechanical"
+        if writer is not None:
+            summary = summarize_chapter(
+                writer, order, title, content, chapter_hash=content_hash(content)
+            )
+            if summary is not None:
+                source = "model"
+        if summary is None:
+            summary = mechanical_summary(order, title, content, core_event=core_events.get(order, ""))
+            source = "mechanical"
+        if not dry_run:
+            store.write_summary(project.meta.id, order, summary.model_dump())  # type: ignore[attr-defined]
+        results.append(
+            {
+                "order": order,
+                "title": title,
+                "source": source,
+                "gist": summary.gist[:80],
+                "written": not dry_run,
+            }
+        )
+    return results

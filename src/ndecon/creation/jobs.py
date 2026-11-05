@@ -299,6 +299,10 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
     # 磁盘推断：任务不在内存里（引擎重启过，或这是上一次会话的 run_id）。
     project_dir = store.projects_dir / project_id
     log = RunLog(project_dir, run_id)
+    # 先回收死记录：内存里没有这个任务，说明它的线程已经死了。那些 in_progress
+    # 记录如果不结算，台账会永远显示「这一章在跑」，而它既不会重跑也不会完成。
+    # 回收发生在推断之前，所以下面的 unsettled 判断看到的是已经结算过的盘。
+    reclaimed = log.reclaim_stale(reason="引擎重启/退出导致这一章没有跑完，已回收为失败")
     records = log.list_records()
     if not records:
         return {
@@ -318,7 +322,10 @@ def job_status(store: WorkspaceStore, project_id: str, run_id: str, job: BatchJo
     orders = [rec.order for rec in records]
     written = sum(1 for rec in records if rec.status == "committed")
     failures = sum(1 for rec in records if rec.status != "committed")
-    unsettled = any(not rec.settled for rec in records)
+    # 回收过的记录已经是 failed 了，所以不能再拿「有没有 unsettled」当判据——
+    # 那次中断的事实只能从回收结果里读回来。
+    unsettled = bool(reclaimed) or any(not rec.settled for rec in records)
+
     # 状态推断必须区分「跑完了」和「半路停下」：
     # 全部 committed 且没有未结算记录 = 这次连写其实成功了，只是任务对象被回收
     # （引擎重启或内存表清理）。若一律报 stopped，界面会显示「中途停下」，

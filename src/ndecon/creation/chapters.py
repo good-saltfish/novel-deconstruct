@@ -18,7 +18,7 @@ from typing import Protocol
 from ndecon.creation.models import ChapterSelfReview, ChapterWriting
 from ndecon.providers.errors import ProviderResponseError
 from ndecon.providers.openai_compat import OpenAICompatProvider
-from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER
+from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band
 from ndecon.retrieval.context import ContextPack
 
 CHAPTER_PROMPT_VERSION = "cw-v0"
@@ -74,11 +74,14 @@ def context_brief(pack: ContextPack) -> str:
         f"\n章尾钩：{target.ending_hook or '（细纲未指定）'}"
     )
     if pack.target_chars > 0:
-        # 字数要求必须显式写进 prompt：闸门按 target_chars±15% 判硬门，
+        # 字数要求必须显式写进 prompt：闸门按 target_chars 的 0.85-1.15 判硬门，
         # prompt 不说的话模型只会按自己的习惯写（实测真实模型 1000-1500 字），
         # 于是每次都被判"偏短"，重写两遍还是偏短——用户看到的是"第 1 章 repair"。
-        low = int(pack.target_chars * 0.9)
-        high = int(pack.target_chars * 1.1)
+        #
+        # 区间必须取自 gates.word_band，不能在这里另算一套：原来这里写 ±10%
+        # （2340-2860），闸门判 0.85/1.15（2210-2989）——模型被要求写 2340 以上，
+        # 而闸门 2210 就放行。两套带宽意味着 prompt 在骗模型，判据只能有一处。
+        low, high = word_band(pack.target_chars)
         lines.append(
             f"\n【本章目标字数】{pack.target_chars} 个汉字（可接受 {low}-{high} 字）。"
             f"这是硬要求：不足 {low} 字会被打回重写。"
