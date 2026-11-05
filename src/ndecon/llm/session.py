@@ -132,21 +132,52 @@ def validate_config_payload(payload: dict) -> tuple[LLMSessionConfig | None, str
     return LLMSessionConfig(provider=provider_id, api_key=api_key, base_url=base_url, model=model), None
 
 
-def test_connection(config: LLMSessionConfig, *, timeout: float = 20.0) -> dict:
-    """用极简 chat 请求测试连通性；返回 {ok, latency_ms, detail}，不抛传输异常。"""
+# 连通性测试的预算。不是 1：推理型模型（sensenova、aliyun 的 deepseek 系）
+# 会先把这点预算全花在 reasoning_content 上，正文一个字符都留不下，
+# 于是链路明明是通的却被判「返回空内容」。256 是实测能让这类模型吐出正文
+# 的最小值（sensenova 在 256 时仍 finish=length，1024 才稳；但连通性测试
+# 只需要「有没有人应答」，不必等它把话说完，见下方判据）。
+PROBE_MAX_TOKENS = 256
+
+
+def test_connection(
+    config: LLMSessionConfig,
+    *,
+    timeout: float = 20.0,
+    transport: httpx.BaseTransport | None = None,
+) -> dict:
+    """用极简 chat 请求测试连通性；返回 {ok, latency_ms, detail}，不抛传输异常。
+
+    判据是**链路通不通**，不是「模型有没有说出话」。这两件事在推理型模型上
+    会分离：预算被 reasoning 吃光时 `content` 为空而 `finish_reason` 是
+    `length`，恰恰证明请求送达、模型响应了。
+
+    原判据只看 `content` 非空，实测把 sensenova 与 aliyun 在 1/32/256 token
+    下全部误判成失败（`_scratch/probe_probe_verdict.py` 四档记录）。那种误判
+    会被用户读成「这个模型不能用」，从而白白放弃一个本来能写正文的供应商。
+
+    ``transport`` 可注入（httpx.MockTransport），测试零网络——这条判据本身
+    就是被误判坑过的，必须有回归测试钉住，否则下次改回 `content` 判据没人拦。
+    """
     started = time.perf_counter()
     try:
         with httpx.Client(
             timeout=timeout,
             headers={"Authorization": f"Bearer {config.api_key or 'ollama'}"},
+            # 同 openai_compat：trust_env=True 会读系统代理/证书设置，
+            # 实测把 https 中转站拦在 TLS 握手（EOF occurred in violation of protocol），
+            # 而 urllib 直连同地址是通的。连通性测试必须走和正文一样的传输路径，
+            # 否则「测试通过、生成失败」这种最难查的分裂就会出现。
+            trust_env=False,
+            transport=transport,
         ) as client:
-            # 不带 response_format，兼容更多本地/第三方端点；max_tokens 1 只验证链路
+            # 不带 response_format，兼容更多本地/第三方端点
             response = client.post(
                 f"{config.base_url}/chat/completions",
                 json={
                     "model": config.model,
                     "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 1,
+                    "max_tokens": PROBE_MAX_TOKENS,
                     "temperature": 0,
                 },
             )
@@ -158,13 +189,28 @@ def test_connection(config: LLMSessionConfig, *, timeout: float = 20.0) -> dict:
                 "detail": f"HTTP {response.status_code}：{response.text[:300]}",
             }
         payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
-        if not str(content).strip():
-            return {"ok": False, "latency_ms": latency_ms, "detail": "连接成功但返回空内容"}
+        choice = payload["choices"][0]
+        content = str((choice.get("message") or {}).get("content") or "")
+        finish = str(choice.get("finish_reason") or "")
+        usage = payload.get("usage") or {}
+        completion = usage.get("completion_tokens")
+        # 判据：模型确实产出了 token（content 或 reasoning 任一），或者它
+        # 正常停下来了。只要 completion_tokens > 0 就说明请求被处理过。
+        produced = bool(content.strip()) or (isinstance(completion, int) and completion > 0)
+        if not produced and finish not in ("stop", "length"):
+            return {
+                "ok": False,
+                "latency_ms": latency_ms,
+                "detail": (
+                    f"端点有响应但没有产出任何 token（finish_reason={finish or '缺失'}，"
+                    f"completion_tokens={completion}）"
+                ),
+            }
+        note = "" if content.strip() else "（本次正文为空，但模型确实响应了）"
         return {
             "ok": True,
             "latency_ms": latency_ms,
-            "detail": f"连接成功，模型 {config.model} 正常响应（{latency_ms}ms）",
+            "detail": f"连接成功，模型 {config.model} 正常响应（{latency_ms}ms）{note}",
         }
     except httpx.HTTPError as exc:
         return {

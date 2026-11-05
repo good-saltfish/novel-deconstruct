@@ -233,10 +233,18 @@ class OpenAICompatProvider:
         model: str | None = None,
         timeout: float | None = None,
         max_attempts: int = 4,
+        max_tokens: int = 0,
         transport: httpx.BaseTransport | None = None,
         sleeper=time.sleep,
     ) -> None:
-        """从显式参数或环境变量读取配置；缺少 key 时立即报配置错误。"""
+        """从显式参数或环境变量读取配置；缺少 key 时立即报配置错误。
+
+        ``max_tokens`` 为 0 表示不指定（沿用上游默认上限）。指定它是为了
+        **让模型知道预算边界**：不指定时宿主按模型默认上限放行（实测有的
+        中转站给到 128k），模型看不到任何「你只有这么多空间」的提示，于是
+        写完 1300 字就自己收尾——而闸门按 2600±15% 判，必被打回重写。
+        写正文时由 chapter writer 传入一个略高于目标字数的值。
+        """
         self.api_key = (
             api_key
             or os.getenv("NOVEL_DECON_API_KEY")
@@ -255,6 +263,7 @@ class OpenAICompatProvider:
                 "缺少 API key：请设置环境变量 NOVEL_DECON_API_KEY 或 OPENAI_API_KEY"
             )
         self.max_attempts = max_attempts
+        self.max_tokens = max(0, int(max_tokens))
         self._sleeper = sleeper
         # 超时值要留成属性：报错文案里必须写出实际秒数与怎么改，
         # 只写「timed out」用户无从判断是模型慢还是引擎挂了。
@@ -274,7 +283,7 @@ class OpenAICompatProvider:
 
     # ---------- 传输层 ----------
 
-    def _post_chat(self, messages: list[dict]) -> str:
+    def _post_chat(self, messages: list[dict], *, max_tokens: int | None = None) -> str:
         """发起一次 chat/completions 请求并返回文本内容；按状态码分类错误。
 
         传输层异常（读超时、连接重置、网络不可达）必须在这里收成
@@ -282,19 +291,26 @@ class OpenAICompatProvider:
         （面板只 catch `ProviderError`），连接被断开且写不出任何响应，
         插件侧只能看到 `fetch failed`，于是界面上报的是「无法连接引擎」——
         把「模型慢/超时」误报成「引擎挂了」，排查方向会被带偏很远。
+
+        ``max_tokens`` 逐次覆盖实例默认值。写正文必须显式给足：不指定时
+        上游按自己的默认上限截断（实测有中转站默认只给 2048），一章 2600 字
+        写到一半被砍，闸门判「生成被截断」，重写两次还是砍在同一处。
+        注意它**不会**让模型写得更长——模型看不到这个字段，它只决定在哪儿
+        被砍；字数服从度是 prompt 的事（见 `chapter_user_message`）。
         """
+        budget = self.max_tokens if max_tokens is None else max(0, int(max_tokens))
 
         def _request() -> str:
+            body: dict = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            }
+            if budget > 0:
+                body["max_tokens"] = budget
             try:
-                response = self._client.post(
-                    f"{self.base_url}/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": 0.2,
-                        "response_format": {"type": "json_object"},
-                    },
-                )
+                response = self._client.post(f"{self.base_url}/chat/completions", json=body)
             except httpx.TimeoutException as exc:
                 # 走到这里说明连兜底超时都撞上了（默认 900 秒），不是「模型慢」，
                 # 是端点真的卡死或网络断了。这种情况重试也没意义：
@@ -379,9 +395,9 @@ class OpenAICompatProvider:
             return data
         raise ProviderResponseError(f"模型未返回合法 JSON：{first_error}") from first_error
 
-    def _chat_json(self, messages: list[dict]) -> dict:
-        """请求并解析为 JSON 对象。"""
-        return self._parse_json(self._post_chat(messages))
+    def _chat_json(self, messages: list[dict], *, max_tokens: int | None = None) -> dict:
+        """请求并解析为 JSON 对象；``max_tokens`` 语义同 ``_post_chat``。"""
+        return self._parse_json(self._post_chat(messages, max_tokens=max_tokens))
 
     def close(self) -> None:
         """关闭底层 HTTP 连接池。"""

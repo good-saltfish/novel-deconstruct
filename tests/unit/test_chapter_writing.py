@@ -6,6 +6,7 @@ from ndecon.creation.chapters import (
     CHAPTER_PROMPT_VERSION,
     FakeChapterWriter,
     OpenAICompatChapterWriter,
+    chapter_max_tokens,
     chapter_user_message,
     context_brief,
 )
@@ -57,10 +58,12 @@ class _StubProvider:
         """记录待返回数据；messages 由测试读取断言。"""
         self._response = response_data
         self.captured_messages: list[dict] | None = None
+        self.captured_max_tokens: int | None = None
 
-    def _chat_json(self, messages: list[dict]) -> dict:
-        """模拟 JSON 通道：捕获请求并返回构造好的响应。"""
+    def _chat_json(self, messages: list[dict], *, max_tokens: int | None = None) -> dict:
+        """模拟 JSON 通道：捕获请求与预算，返回构造好的响应。"""
         self.captured_messages = messages
+        self.captured_max_tokens = max_tokens
         return self._response
 
 
@@ -152,6 +155,9 @@ def test_openai_compat_writer_parses_content_and_review(tmp_path) -> None:
     assert stub.captured_messages is not None
     assert [m["role"] for m in stub.captured_messages] == ["system", "user"]
     assert "本章细纲" in stub.captured_messages[1]["content"]
+    # 预算必须按目标字数给足，否则上游默认上限可能只够写半章
+    assert stub.captured_max_tokens == chapter_max_tokens(pack.target_chars)
+    assert stub.captured_max_tokens >= pack.target_chars * 2
 
 
 def test_openai_compat_writer_rejects_empty_content(tmp_path) -> None:
