@@ -1333,6 +1333,15 @@ un_server 传 server.jobs），不能在这里新建：
             if not isinstance(auto_accept, bool):
                 self._error(400, f"auto_accept 必须是布尔值：{auto_accept!r}")
                 return
+
+            # 字数是否算硬门：默认不算（见 gates.check_chapter 的说明）。
+            # 校验必须先做完再跑事务：`self._error` 只保证「不会写两次响应」，
+            # 它拦不住后面的 run_chapter —— 那样会先报 400 再真写一章。
+            length_gate = payload.get("length_gate", False)
+            if not isinstance(length_gate, bool):
+                self._error(400, f"length_gate 必须是布尔值：{length_gate!r}")
+                return
+
             try:
                 outcome = run_chapter(
                     store,
@@ -1342,6 +1351,7 @@ un_server 传 server.jobs），不能在这里新建：
                     provider_obj=provider_obj,
                     auto_accept=auto_accept,
                     max_repairs=max_repairs,
+                    length_gate=length_gate,
                 )
             except ValueError as exc:
                 self._error(400, str(exc))
@@ -1362,6 +1372,9 @@ un_server 传 server.jobs），不能在这里新建：
                 "summary_source": outcome.summary_source,
                 "hard_failures": outcome.hard_failures,
                 "hard_failure_details": outcome.hard_failure_details,
+                # 字数提示：入库了但字数偏少。必须带出去，界面才知道
+                # 这不是失败（用户的原话：「有没有可能是字数不达标导致一直不生成」）。
+                "advisories": outcome.advisories,
                 "sample_quotes": outcome.sample_quotes,
                 "error": outcome.error,
                 "run_id": outcome.run_id,
@@ -1426,6 +1439,12 @@ un_server 传 server.jobs），不能在这里新建：
             if not isinstance(auto_accept, bool):
                 self._error(400, f"auto_accept 必须是布尔值：{auto_accept!r}")
                 return
+            # 字数是否算硬门：默认不算（见 gates.check_chapter 的说明）。
+            # 连写这条路也必须能传，否则「我想严格控字数」在批量模式下做不到。
+            length_gate = payload.get("length_gate", False)
+            if not isinstance(length_gate, bool):
+                self._error(400, f"length_gate 必须是布尔值：{length_gate!r}")
+                return
 
             first = start or (project.cursor + 1)
             last = end or total
@@ -1457,6 +1476,7 @@ un_server 传 server.jobs），不能在这里新建：
                 provider_obj=provider_obj,
                 auto_accept=auto_accept,
                 max_repairs=max_repairs,
+                length_gate=length_gate,
                 run_id=payload.get("run_id"),
             )
             # 202 而不是 200：请求被接受，但活儿还没干完。用 200 会让调用方

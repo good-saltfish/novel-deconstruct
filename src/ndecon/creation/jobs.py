@@ -78,6 +78,9 @@ class BatchJob:
     current_phase: str = ""
     current_detail: str = ""
     current_since: str = ""
+    # 字数是否当硬门（默认否）。连写也必须能选，否则「想严格控字数」在批量
+    # 模式下做不到，用户只能一章一章手点。
+    length_gate: bool = False
 
     @property
     def total(self) -> int:
@@ -148,6 +151,7 @@ class JobRegistry:
         provider_obj: object | None,
         auto_accept: bool,
         max_repairs: int,
+        length_gate: bool = False,
         run_id: str | None = None,
     ) -> BatchJob:
         """起一个后台连写任务并立刻返回（不等第一章跑完）。
@@ -161,6 +165,7 @@ class JobRegistry:
             first=first,
             last=last,
             started_at=now_iso(),
+            length_gate=length_gate,
         )
         self.register(job)
         thread = threading.Thread(
@@ -219,6 +224,7 @@ class JobRegistry:
                     run_id=job.run_id,
                     auto_accept=auto_accept,
                     max_repairs=max_repairs,
+                    length_gate=job.length_gate,
                     on_phase=on_phase,
                 )
                 job.chapters.append({
