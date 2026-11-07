@@ -54,13 +54,15 @@ class _StubProvider:
     model = "test-model"
 
     def __init__(self, response_data: dict) -> None:
-        """记录待返回数据；messages 由测试读取断言。"""
+        """记录待返回数据；messages 与 temperature 由测试读取断言。"""
         self._response = response_data
         self.captured_messages: list[dict] | None = None
+        self.captured_temperature: float | None = None
 
-    def _chat_json(self, messages: list[dict]) -> dict:
-        """模拟 JSON 通道：捕获请求，返回构造好的响应。"""
+    def _chat_json(self, messages: list[dict], *, temperature: float | None = None) -> dict:
+        """模拟 JSON 通道：捕获请求（含采样温度），返回构造好的响应。"""
         self.captured_messages = messages
+        self.captured_temperature = temperature
         return self._response
 
 
@@ -152,6 +154,23 @@ def test_openai_compat_writer_parses_content_and_review(tmp_path) -> None:
     assert stub.captured_messages is not None
     assert [m["role"] for m in stub.captured_messages] == ["system", "user"]
     assert "本章细纲" in stub.captured_messages[1]["content"]
+    # 没指定采样温度时不能传：让 provider 走它自己的默认（0.2），
+    # 与既有单章生成行为逐位一致。
+    assert stub.captured_temperature is None
+
+
+def test_openai_compat_writer_passes_temperature_when_given(tmp_path) -> None:
+    """给定采样温度时要透传到 provider：并行候选靠它拉开版本差异。"""
+    store = WorkspaceStore(tmp_path)
+    pack = build_context_pack(_creation_project(store), 2)
+    stub = _StubProvider(
+        {
+            "content": "雨下得很大。",
+            "review": {"hook_strength": 3, "info_density": 3, "outline_followed": True},
+        }
+    )
+    OpenAICompatChapterWriter(stub, temperature=0.8).write_chapter(pack)  # type: ignore[arg-type]
+    assert stub.captured_temperature == 0.8
 
 
 def test_openai_compat_writer_rejects_empty_content(tmp_path) -> None:

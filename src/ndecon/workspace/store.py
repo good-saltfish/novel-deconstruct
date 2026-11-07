@@ -148,6 +148,17 @@ class WorkspaceStore:
         self._atomic_write_json(path, payload)
         return path
 
+    def read_project_artifact(self, project_id: str, filename: str) -> Path | None:
+        """返回项目内某产物的路径，不存在时返回 None；文件名同样走白名单。
+
+        只回路径不回内容：调用方自己决定要不要解析（有的产物几百 KB，
+        调用方可能只想知道「有没有」）。白名单与写入口共用，防住 `../` 之类。
+        """
+        if not _SAFE_ARTIFACT.match(filename):
+            raise ValueError(f"非法产物文件名：{filename!r}")
+        path = self._project_dir(project_id) / filename
+        return path if path.is_file() else None
+
     def load_project_index(self, project_id: str) -> BM25Index | None:
         """读取 reindex 落盘的章节检索索引（index.json）；不存在时返回 None。
 

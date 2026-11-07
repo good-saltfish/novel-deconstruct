@@ -614,6 +614,115 @@ def chapter(
 
 
 @app.command()
+def candidates(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    order: int = typer.Argument(..., help="章号（从 1 起）"),
+    count: int = typer.Option(3, "--count", help="并行生成几版（2-6）"),
+    provider: str = typer.Option("fake", "--provider", help="fake（离线确定性）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+    no_length_gate: bool = typer.Option(
+        False, "--no-length-gate", help="字数不达标只记提醒、不算硬门"
+    ),
+) -> None:
+    """并行生成同一章的多个候选版本（不落盘正文，等读者挑一版）。"""
+    from ndecon.creation.candidates import generate_candidates
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("candidates 只能用于创作项目")
+
+    name, provider_obj = _chapter_provider(provider, model)
+    try:
+        payload = generate_candidates(
+            store,
+            project,
+            order,
+            provider=name,
+            provider_obj=provider_obj,
+            count=count,
+            length_gate=not no_length_gate,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    typer.secho(
+        f"第{order}章：生成 {payload['requested']} 版，"
+        f"成功 {payload['ok_count']} 版，过硬门 {payload['passed_count']} 版"
+        f"（目标 {payload['target_chars']} 字，耗时 {payload['elapsed_ms']}ms）",
+        fg=typer.colors.GREEN if payload["passed_count"] else typer.colors.YELLOW,
+    )
+    for item in payload["candidates"]:
+        gate = item["gate"] or {}
+        mark = "过门" if gate.get("passed") else ("失败" if item["status"] != "ok" else "未过门")
+        typer.echo(
+            f"  #{item['index']} [{mark}] {gate.get('cjk_chars', 0)} 字 判定 {gate.get('verdict', '-')}"
+            + (f"  温度 {item['temperature']}" if item["temperature"] is not None else "")
+        )
+        if item["error"]:
+            typer.secho(f"      错误：{item['error']}", fg=typer.colors.RED)
+        for failure in gate.get("hard_failures") or []:
+            typer.secho(f"      未过门：{failure['rule']}（{failure['detail']}）", fg=typer.colors.YELLOW)
+        typer.echo(f"      预览：{item['preview']}")
+    typer.echo(f"  产物：projects/{project_id}/candidates_ch{order:03d}.json")
+    typer.echo(f"  挑一版：ndecon pick {project_id} {order} --index N")
+    if not payload["passed_count"]:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def pick(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    order: int = typer.Argument(..., help="章号（从 1 起）"),
+    index: int = typer.Option(..., "--index", help="要提交的候选编号（从 0 起）"),
+    provider: str = typer.Option("fake", "--provider", help="fake（离线确定性）或 openai-compat（需 key）"),
+    model: str = typer.Option("", "--model", help="openai-compat 的模型名"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+    draft_only: bool = typer.Option(False, "--draft-only", help="过了硬门也落 draft，不自动验收"),
+) -> None:
+    """把候选里的某一版提交成正式正文（写正文 + 摘要 + 记录 + 游标）。"""
+    from ndecon.creation.candidates import select_candidate
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("pick 只能用于创作项目")
+
+    name, provider_obj = _chapter_provider(provider, model)
+    try:
+        result = select_candidate(
+            store,
+            project,
+            order,
+            index,
+            provider=name,
+            provider_obj=provider_obj,
+            auto_accept=not draft_only,
+        )
+    except ValueError as exc:
+        typer.secho(f"提交失败：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    typer.secho(
+        f"第{order}章：已提交候选 #{result['selected_index']}"
+        f"（判定 {result['verdict']}，{result['cjk_chars']} 字，状态 {result['status']}）",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(
+        "  摘要：" + ("模型生成" if result["summary_source"] == "model" else "机械摘要（模型摘要失败，已保底）")
+    )
+    for rule in result["hard_failures"]:
+        typer.secho(f"  未过门：{rule}", fg=typer.colors.YELLOW)
+
+
+@app.command()
 def run(
     project_id: str = typer.Argument(..., help="创作项目 ID"),
     start: int = typer.Option(0, "--from", help="起始章号；缺省从 project.cursor+1 续跑"),

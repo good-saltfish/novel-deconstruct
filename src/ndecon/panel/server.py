@@ -23,6 +23,12 @@ from pydantic import ValidationError
 from ndecon.agent.planners import FakePlanner, OpenAICompatPlanner
 from ndecon.agent.runner import run_planner
 from ndecon.creation import plans as creation_plans
+from ndecon.creation.candidates import (
+    DEFAULT_CANDIDATES,
+    generate_candidates,
+    read_candidates,
+    select_candidate,
+)
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.jobs import JOB_INTERRUPTED, JOB_RUNNING, JobRegistry, job_status
 from ndecon.creation.models import (
@@ -241,6 +247,8 @@ un_server 传 server.jobs），不能在这里新建：
                     self._get_chapter_context(parts[2], parts[4])
                 elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "versions":
                     self._list_chapter_versions(parts[2], parts[4])
+                elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "candidates":
+                    self._get_candidates(parts[2], parts[4])
                 elif len(parts) == 5 and parts[3] == "chapters":
                     self._get_chapter(parts[2], parts[4])
                 elif len(parts) == 5 and parts[3] == "runs":
@@ -265,7 +273,7 @@ un_server 传 server.jobs），不能在这里新建：
                 len(parts) == 6
                 and parts[:2] == ["api", "projects"]
                 and parts[3] == "chapters"
-                and parts[5] in ("generate", "confirm", "run", "restore")
+                and parts[5] in ("generate", "confirm", "run", "restore", "candidates")
             )
             if path == "/api/projects/import":
                 self._import_reference(payload)
@@ -280,6 +288,16 @@ un_server 传 server.jobs），不能在这里新建：
                     self._run_chapter_txn(parts[2], parts[4], payload)
                 elif parts[5] == "restore":
                     self._restore_chapter_version(parts[2], parts[4], payload)
+                elif parts[5] == "candidates":
+                    # 生成与选中挤在一个 URL 上：两者都是「候选」这一个资源上的动作，
+                    # 靠 body 里的 action 分流，省掉一条要同步维护的路由白名单。
+                    action = str(payload.get("action", "generate")).strip() or "generate"
+                    if action == "generate":
+                        self._generate_chapter_candidates(parts[2], parts[4], payload)
+                    elif action == "select":
+                        self._select_chapter_candidate(parts[2], parts[4], payload)
+                    else:
+                        self._error(400, f"未知 action：{action}（可选 generate / select）")
                 else:
                     self._confirm_chapter(parts[2], parts[4])
             elif path.startswith("/api/projects/") and path.endswith("/accept-skeleton"):
@@ -1290,6 +1308,127 @@ un_server 传 server.jobs），不能在这里新建：
             project.manuscripts[key].updated_at = store.now_iso()
             store.save_creation(project)
             self._send_json(200, self._chapter_payload(project, target.order))
+
+        # ---- 并行候选：同一章生成多版，读者挑一版才落盘 ------------------------
+        #
+        # 与 /run 的区别不是「多跑几次」：/run 每跑一次都会写正文、摘要与游标，
+        # 连跑三次只留最后一版，前两版连痕迹都不剩。候选层把 N 版全存进
+        # candidates_chNNN.json（各带闸门判决、预览与字数），读者点「用这一版」
+        # 才走 select_candidate 提交。选中之前，盘上的正文一个字都不动。
+
+        def _get_candidates(self, project_id: str, order_text: str) -> None:
+            """读某章的候选产物；没有就回空壳，界面据此显示「还没生成」。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            payload = read_candidates(store, project.meta.id, target.order)
+            if payload is None:
+                self._send_json(
+                    200,
+                    {
+                        "order": target.order,
+                        "title": target.title,
+                        "exists": False,
+                        "selected_index": None,
+                        "selected_at": "",
+                        "candidates": [],
+                    },
+                )
+                return
+            payload["exists"] = True
+            self._send_json(200, payload)
+
+        def _generate_chapter_candidates(self, project_id: str, order_text: str, payload: dict) -> None:
+            """并行生成 N 版候选；只写候选产物，不碰正文、摘要与游标。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            provider_name = str(payload.get("provider", "fake")).strip() or "fake"
+            resolved = self._resolve_provider(provider_name)
+            if resolved is None:
+                return
+            name, provider_obj = resolved
+            try:
+                count = int(payload.get("count", DEFAULT_CANDIDATES))
+            except (TypeError, ValueError):
+                self._error(400, f"count 必须是整数：{payload.get('count')!r}")
+                return
+            # 数量范围交给 generate_candidates 判：它抛 ValueError 时还没写任何东西，
+            # 在这里再抄一份上下限只会多一处会跟引擎走偏的数字。
+            length_gate = payload.get("length_gate", True)
+            if not isinstance(length_gate, bool):
+                self._error(400, f"length_gate 必须是布尔值：{length_gate!r}")
+                return
+            try:
+                result = generate_candidates(
+                    store,
+                    project,
+                    target.order,
+                    provider=name,
+                    provider_obj=provider_obj,
+                    count=count,
+                    length_gate=length_gate,
+                )
+            except ValueError as exc:
+                self._error(400, str(exc))
+                return
+            result["exists"] = True
+            self._send_json(200, result)
+
+        def _select_chapter_candidate(self, project_id: str, order_text: str, payload: dict) -> None:
+            """把读者选中的那一版提交成正式正文（正文 + 摘要 + 记录 + 游标）。"""
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, target = loaded
+            raw_index = payload.get("index")
+            try:
+                index = int(raw_index)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                self._error(400, f"index 必须是整数：{raw_index!r}")
+                return
+            provider_name = str(payload.get("provider", "fake")).strip() or "fake"
+            if provider_name == "fake":
+                name, provider_obj = "fake", None
+            elif provider_name in ("openai-compat", "ai"):
+                try:
+                    name, provider_obj = "openai-compat", llm_session.require_provider()
+                except ProviderError:
+                    # 模型没配好不能拦住提交：正文才是读者挑的那一版。
+                    # provider_obj=None 会让 select_candidate 退机械摘要保底，
+                    # 而不是塞一段规则生成的假摘要进真书。
+                    name, provider_obj = "openai-compat", None
+            else:
+                self._error(400, f"未知 provider：{provider_name}（可选 fake / ai）")
+                return
+            auto_accept = payload.get("auto_accept", True)
+            if not isinstance(auto_accept, bool):
+                self._error(400, f"auto_accept 必须是布尔值：{auto_accept!r}")
+                return
+            try:
+                selection = select_candidate(
+                    store,
+                    project,
+                    target.order,
+                    index,
+                    provider=name,
+                    provider_obj=provider_obj,
+                    auto_accept=auto_accept,
+                )
+            except ValueError as exc:
+                self._error(400, str(exc))
+                return
+            # 提交已改写 project.json（游标与 manuscripts），重读后再组装响应。
+            try:
+                fresh = store.get(project_id)
+            except KeyError:
+                fresh = project
+            body = self._chapter_payload(fresh, target.order) if isinstance(fresh, CreationProject) else {}
+            body["selection"] = selection
+            body["candidates"] = read_candidates(store, project.meta.id, target.order)
+            self._send_json(200, body)
 
         # ---- 写操作：走章事务（带闸门、run 记录、失败回滚）--------------------
         #

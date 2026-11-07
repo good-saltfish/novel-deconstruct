@@ -26,6 +26,9 @@ CHAPTER_PROMPT_VERSION = "cw-v0"
 # 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
 CHAPTER_SCENE_SEED = 20261101
 CHAPTER_SCENE_SEED_STEP = 7919
+# 并行候选之间的种子间隔。必须明显大于章内场景步长（12），又小于章间步长
+# （7919）：6 个候选 0..5000 全部落在本章区间内，不会串到邻章的场景序列上。
+CANDIDATE_SEED_STRIDE = 1000
 
 CHAPTER_SYSTEM_MESSAGE = """你是一名资深中文网络小说写手，为主笔作者撰写章节正文草稿。
 
@@ -214,11 +217,24 @@ class FakeChapterWriter:
         "{p}，{o}被{s}{v}，{d}，{t}。",
     )
 
-    def __init__(self, target_chars: int = CHAPTER_TARGET_CHARS_DEFAULT) -> None:
-        """``target_chars`` 只影响占位正文长度，不改变结构与自评。"""
+    def __init__(
+        self,
+        target_chars: int = CHAPTER_TARGET_CHARS_DEFAULT,
+        seed_offset: int = 0,
+    ) -> None:
+        """``target_chars`` 只影响占位正文长度，不改变结构与自评。
+
+        ``seed_offset`` 给并行候选留的口子：同一份上下文包下本生成器是确定性的
+        （测试要逐字断言），不加偏移时 N 个候选会逐字相同，"挑最优"就成了摆设，
+        而且它们互为近章，跨章新鲜度会把兄弟候选判成「换个说法重写一遍」。
+        偏移只错开场景句序列，开篇钩/核心事件/章尾钩仍忠于细纲。
+        """
         if target_chars < 1:
             raise ValueError("target_chars 必须为正整数")
+        if seed_offset < 0:
+            raise ValueError("seed_offset 不能为负")
         self.target_chars = target_chars
+        self.seed_offset = seed_offset
 
     @staticmethod
     def _strip_wrappers(text: str) -> str:
@@ -300,7 +316,15 @@ class FakeChapterWriter:
                 paragraphs.append(f"（伏笔照应）行文没有丢下旧线：{debt}。")
 
         # 场景展开：补足字数到目标带内（CJK 计数与闸门同口径）
-        offset = CHAPTER_SCENE_SEED + (target.order - 1) * CHAPTER_SCENE_SEED_STEP
+        # seed_offset 按 CANDIDATE_SEED_STRIDE 错开，不用 ±1 那种小步：
+        # 同一章内部自己也会以 12 为步长往上加，小步会和自己的场景序列重叠，
+        # 候选之间又回到"逐字相同"。1000 的间隔让 6 个候选（0..5000）全部落在
+        # 相邻章步长 CHAPTER_SCENE_SEED_STEP(7919) 之内，不会撞到别的章。
+        offset = (
+            CHAPTER_SCENE_SEED
+            + (target.order - 1) * CHAPTER_SCENE_SEED_STEP
+            + self.seed_offset * CANDIDATE_SEED_STRIDE
+        )
         cjk_now = len(re.findall(r"[\u4e00-\u9fff]", "\n\n".join(paragraphs)))
         need = max(0, self.target_chars - cjk_now)
         scene_count = 0
@@ -333,9 +357,18 @@ class OpenAICompatChapterWriter:
     model_id: str
     prompt_version = CHAPTER_PROMPT_VERSION
 
-    def __init__(self, provider: OpenAICompatProvider) -> None:
-        """包装已配置 key 的拆书 provider（与骨架生成共用鉴权/传输栈）。"""
+    def __init__(
+        self,
+        provider: OpenAICompatProvider,
+        temperature: float | None = None,
+    ) -> None:
+        """包装已配置 key 的拆书 provider（与骨架生成共用鉴权/传输栈）。
+
+        ``temperature`` 只在并行候选里传（每候选一档，拉开措辞）；留空沿用
+        provider 的默认 0.2，重复生成才可复现。
+        """
         self._provider = provider
+        self._temperature = temperature
         self.model_id = f"openai-compat:{provider.model}"
 
     def write_chapter(self, pack: ContextPack) -> ChapterWriting:
@@ -349,7 +382,9 @@ class OpenAICompatChapterWriter:
         # 都留不下（实测 sensenova 与 aliyun 各 6224 token 全进 reasoning_tokens、
         # text_tokens=0、finish_reason=length）。预算越大推理也越长，这是模型的
         # 自由，算不准；不设上限时上游按模型默认放行，推理完还有空间写正文。
-        data = self._provider._chat_json(messages)  # noqa: SLF001
+        data = self._provider._chat_json(  # noqa: SLF001
+            messages, temperature=self._temperature
+        )
         try:
             content = str(data["content"]).strip()
             if not content:

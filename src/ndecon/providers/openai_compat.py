@@ -274,7 +274,7 @@ class OpenAICompatProvider:
 
     # ---------- 传输层 ----------
 
-    def _post_chat(self, messages: list[dict]) -> str:
+    def _post_chat(self, messages: list[dict], *, temperature: float | None = None) -> str:
         """发起一次 chat/completions 请求并返回文本内容；按状态码分类错误。
 
         传输层异常（读超时、连接重置、网络不可达）必须在这里收成
@@ -290,13 +290,17 @@ class OpenAICompatProvider:
         给多少预算都可能被推理吃光——预算越大推理也越长，这是模型的
         自由，不是我们能算准的数。不设上限时由上游按模型默认放行，
         推理写完后仍有空间写正文。
+
+        `temperature` 只在「同一章并行多条候选、想让它们真的有差别」时传入
+        （见 ``creation/candidates.py``）。默认仍是 0.2：重复生成要可复现，
+        调高温度会让「同一输入两次结果不同」，把闸门失败归因变得含混。
         """
 
         def _request() -> str:
             body: dict = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": 0.2,
+                "temperature": 0.2 if temperature is None else temperature,
                 "response_format": {"type": "json_object"},
             }
             try:
@@ -424,9 +428,9 @@ class OpenAICompatProvider:
             return data
         raise ProviderResponseError(f"模型未返回合法 JSON：{first_error}") from first_error
 
-    def _chat_json(self, messages: list[dict]) -> dict:
+    def _chat_json(self, messages: list[dict], *, temperature: float | None = None) -> dict:
         """请求并解析为 JSON 对象。"""
-        return self._parse_json(self._post_chat(messages))
+        return self._parse_json(self._post_chat(messages, temperature=temperature))
 
     def close(self) -> None:
         """关闭底层 HTTP 连接池。"""
