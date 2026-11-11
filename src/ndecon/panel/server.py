@@ -116,6 +116,27 @@ def scrub_paths(message: str) -> str:
     return _POSIX_ABS_PATH_RE.sub("<路径>", text)
 
 
+def _display_name(path_str: str) -> str:
+    """从路径里取「文件名」用于报错，两个平台的两种分隔符都认。
+
+    不能用 `Path(x).name`：Windows 上 `Path(r"a\\b.txt").name == "b.txt"`，而
+    POSIX 上反斜杠不是分隔符，`Path(r"D:\\myproject\\书.txt").name` 会原样返回
+    整个字符串。这个函数的输出紧接着要过 `scrub_paths`，于是 CI（Linux）上
+    整条被替换成 `<路径>`，用户看不到到底是哪个文件没找到——本机永远复现不了。
+    """
+    return re.split(r"[\\/]", path_str.strip())[-1]
+
+
+def _display_stem(path_str: str) -> str:
+    """`_display_name` 去掉扩展名后的部分，用作书名/项目标题的候选。
+
+    同上：`Path.stem` 在 POSIX 上不认识反斜杠，会吐出带盘符的整串。
+    """
+    name = _display_name(path_str)
+    stem, dot, _suffix = name.rpartition(".")
+    return stem if dot and stem else name
+
+
 # Planner Agent 合法任务（契约测试据此给出可读报错）
 _VALID_AGENT_TASKS = ("expand_chapter", "add_settings")
 
@@ -581,18 +602,19 @@ un_server 传 server.jobs），不能在这里新建：
             source = str(payload.get("file_path", "")).strip()
             source_path = Path(source)
             if not source_path.is_file():
-                self._error(400, f"源文件不存在：{source_path.name or '（未提供路径）'}")
+                shown = _display_name(source) or "（未提供路径）"
+                self._error(400, f"源文件不存在：{shown}")
                 return
             try:
                 text = source_path.read_text(encoding="utf-8")
-                bundle = run_analyze(text, name or source_path.stem, FakeProvider())
+                bundle = run_analyze(text, name or _display_stem(source) or "未命名", FakeProvider())
             except (OSError, UnicodeDecodeError) as exc:
                 self._error(400, f"读取源文件失败：{type(exc).__name__}")
                 return
             except ValueError as exc:
                 self._error(400, f"拆书失败：{exc}")
                 return
-            project_id = store.allocate_project_id("reference", name or source_path.stem)
+            project_id = store.allocate_project_id("reference", name or _display_stem(source) or "未命名")
             project = ReferenceProject(
                 meta=ProjectMeta(
                     id=project_id, kind="reference", title=bundle.book_title,

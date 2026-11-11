@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from ndecon.panel.server import api_request, scrub_paths, serve_in_thread
+from ndecon.panel.server import _display_name, _display_stem, api_request, scrub_paths, serve_in_thread
 
 
 @pytest.fixture()
@@ -94,6 +94,29 @@ def test_url_is_handled_before_windows_path() -> None:
     assert "htt<路径>" not in cleaned
 
 
+def test_display_name_handles_both_separators() -> None:
+    """文件名必须两个平台都切得对。
+
+    这是 CI 上唯一红的测试暴露出来的坑：`Path(r"D:\\x\\书.txt").name` 在
+    Windows 上是 `书.txt`，在 Linux 上因为反斜杠不是分隔符而返回整串
+    `D:\\x\\书.txt`，接着被脱敏正则换成 `<路径>`，用户看不到是哪个文件。
+    """
+    assert _display_name(r"D:\myproject\不存在的一本书.txt") == "不存在的一本书.txt"
+    assert _display_name("/home/u/书.txt") == "书.txt"
+    assert _display_name("书.txt") == "书.txt"
+    assert _display_name("  D:\\a\\b\\c.md  ") == "c.md"
+    assert _display_name("") == ""
+
+
+def test_display_stem_drops_extension_across_platforms() -> None:
+    assert _display_stem(r"D:\myproject\守灯人.txt") == "守灯人"
+    assert _display_stem("/home/u/守灯人.md") == "守灯人"
+    # 没有扩展名时原样返回，不能把「第一卷」这种名字截成「第一卷」
+    assert _display_stem(r"D:\myproject\第一卷") == "第一卷"
+    # 以点开头的隐藏文件名不该被切空
+    assert _display_stem("/home/u/.env") == ".env"
+
+
 def test_error_endpoint_scrubs_in_practice(server) -> None:
     """端到端：真打一个会带路径的失败请求，响应体里不能有本机路径。"""
     status, body = api_request(
@@ -105,5 +128,7 @@ def test_error_endpoint_scrubs_in_practice(server) -> None:
     assert status == 400
     assert "D:" not in body["error"]
     assert "myproject" not in body["error"]
-    # 但用户仍要知道是哪个文件没找到
+    # 但用户仍要知道是哪个文件没找到。这条在 Linux 上曾经必挂：`Path.name`
+    # 在 POSIX 不认反斜杠，整个字符串被当成文件名，随后又被脱敏正则换成
+    # `<路径>`，文件名一起没了——所以文件名必须用 `_display_name` 自己切。
     assert "不存在的一本书.txt" in body["error"]
