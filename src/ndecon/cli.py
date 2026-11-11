@@ -122,6 +122,11 @@ def panel(
     ),
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅本机回环，勿改成 0.0.0.0"),
     port: int = typer.Option(8765, "--port", help="监听端口；0 表示由系统分配"),
+    token: str = typer.Option(
+        "",
+        "--token",
+        help="访问令牌；非空时所有 API 请求都必须带 X-Ndecon-Token 头。插件会自动生成，自己用浏览器打开时留空即可",
+    ),
     open_browser: bool = typer.Option(False, "--open", help="启动后自动打开浏览器"),
 ) -> None:
     """启动本地项目面板（拆书入库 + 长篇结构化创作工作台）。"""
@@ -129,11 +134,17 @@ def panel(
 
     if host != "127.0.0.1":
         typer.secho("安全提示：面板设计为本机使用，强烈建议保持 --host 127.0.0.1", fg=typer.colors.YELLOW)
-    server = run_server(workspace, host=host, port=port)
+    server = run_server(workspace, host=host, port=port, token=token)
     actual_host, actual_port = server.server_address
     url = f"http://{actual_host}:{actual_port}"
     typer.secho(f"ndecon 面板已启动：{url}（Ctrl+C 停止）", fg=typer.colors.GREEN)
-    if open_browser:
+    if token:
+        # token 绝不进 URL：URL 会落到浏览器历史、终端滚动缓冲和日志里。
+        typer.secho(
+            "已开启访问校验：直接用浏览器打开会返回 401，只有带 --token 的调用方能访问。",
+            fg=typer.colors.YELLOW,
+        )
+    elif open_browser:
         import webbrowser
 
         webbrowser.open(url)

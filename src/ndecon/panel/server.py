@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import re
 import threading
@@ -60,6 +61,7 @@ from ndecon.llm.catalog import catalog_payload
 from ndecon.llm.session import (
     LLMSession,
     LLMSessionConfig,
+    same_origin,
     test_connection,
     validate_config_payload,
 )
@@ -75,10 +77,44 @@ from ndecon.workspace.models import (
     ReferenceProject,
     is_usable,
 )
-from ndecon.workspace.store import WorkspaceStore, new_project_id
+from ndecon.workspace.store import WorkspaceStore
 
 # 汉字计数：台账要回答「这一章多少字」，老 run 记录缺字段时得从正文现算。
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# 错误文案里要抹掉的绝对路径（安全审计 H-2）。
+#
+# 为什么在出口统一抹，而不是逐个 `self._error(...)` 改：面板有二十多处把异常
+# 原文回给前端，逐点脱敏一定会漏，以后新加的路由又会漏一遍。路径泄露的危险
+# 也不在某一条文案里——`OSError` 的 str、pydantic 的 `ValidationError` 都会把
+# 「D:\Users\某某\...」带出来，等于告诉任何能打到面板的人这台机器上有哪些目录、
+# 用户名是什么。
+#
+# 只抹路径，不动其余文字：错误原因（HTTP 状态码、schema 哪个字段不对、模型返回
+# 了什么）全部保留。要看全量原文就去看 engine.log，那里有 traceback——可诊断性
+# 没丢，只是不往网络上去。
+_WIN_ABS_PATH_RE = re.compile(
+    r"(?<![A-Za-z])[A-Za-z]:[\\/]+(?:[^\\/\s\"'<>|,*?:]+[\\/]+)*[^\\/\s\"'<>|,*?:]*"
+)
+_POSIX_ABS_PATH_RE = re.compile(r"/(?:Users|home|root|private|var|opt|tmp)/[^\s\"'<>|,;]*")
+_URL_PATH_RE = re.compile(r"\b(https?://[^/\s:\"'<>]+)[^\s\"'<>]*")
+
+
+def scrub_paths(message: str) -> str:
+    """把错误文案里的本机绝对路径换成占位符，保留其余全部信息。
+
+    URL 也一起处理：保留 scheme 与 host（否则「连不上哪个服务器」这类报错没法
+    用），抹掉后面的路径——`base_url` 里可能藏着内网主机名与端口后的具体接口。
+
+    顺序有讲究：先抹 URL，再抹 Windows 路径。倒过来的话 `https://x` 里的 `s:`
+    会被当成盘符匹配掉一半（`htt` + `<路径>` 这种鬼东西）。
+    """
+    if not message:
+        return message
+    text = _URL_PATH_RE.sub(r"\1", message)
+    text = _WIN_ABS_PATH_RE.sub("<路径>", text)
+    return _POSIX_ABS_PATH_RE.sub("<路径>", text)
+
 
 # Planner Agent 合法任务（契约测试据此给出可读报错）
 _VALID_AGENT_TASKS = ("expand_chapter", "add_settings")
@@ -144,12 +180,19 @@ def create_handler(
     store: WorkspaceStore,
     llm_session: LLMSession,
     jobs: JobRegistry | None = None,
+    *,
+    token: str = "",
 ) -> type[BaseHTTPRequestHandler]:
     """生成绑定特定工作区、LLM 会话与连写任务表的请求处理器类。
 
     jobs 必须由调用方传入（
 un_server 传 server.jobs），不能在这里新建：
     连写任务的状态要跨请求存活，每次 new 一个就等于每次查询都是新任务表。
+
+    token 为空表示不鉴权（用户自己 `ndecon panel` 打开网页的默认用法）；
+    非空时要求每个 API 请求带 `X-Ndecon-Token` 或 `Authorization: Bearer`。
+    为什么必须可选：面板既能被插件当子进程拉起，也能被用户用浏览器直接打开。
+    强制鉴权会让浏览器场景直接瘫掉，所以由调用方（插件）决定是否开启。
     """
     job_registry = jobs if jobs is not None else JobRegistry()
 
@@ -157,14 +200,23 @@ un_server 传 server.jobs），不能在这里新建：
         """面板 HTTP 处理器：JSON API 与静态资源。"""
 
         server_version = "ndecon-panel/0.1"
+        panel_token = token
 
         def log_message(self, *_args) -> None:
             """静默默认访问日志，避免面板运行时刷屏（错误仍由异常路径打印）。"""
 
         # ---- 基础收发 ----
 
+        def _read_json(self) -> dict:
+            """读取并解析请求体 JSON；非法 JSON 由调用方统一 400。"""
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length) if length else b"{}"
+            self._body_read = True
+            return json.loads(raw.decode("utf-8"))
+
         def _send_json(self, status: int, payload: dict | list) -> None:
-            """以 UTF-8 JSON 响应。"""
+            """返回 JSON；写响应前先确保请求体已经读掉（见 `_drain_body`）。"""
+            self._drain_body()
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -172,15 +224,90 @@ un_server 传 server.jobs），不能在这里新建：
             self.end_headers()
             self.wfile.write(body)
 
-        def _read_json(self) -> dict:
-            """读取并解析请求体 JSON；非法 JSON 由调用方统一 400。"""
-            length = int(self.headers.get("Content-Length", 0))
-            raw = self.rfile.read(length) if length else b"{}"
-            return json.loads(raw.decode("utf-8"))
-
         def _error(self, status: int, message: str) -> None:
-            """返回统一错误结构。"""
-            self._send_json(status, {"error": message})
+            """返回统一错误结构；文案里的本机绝对路径在这里统一抹掉。"""
+            self._send_json(status, {"error": scrub_paths(message)})
+
+        # ---- 访问校验 ----
+
+        #: 丢弃请求体的上限。超过这个体积就不读了，改成回完直接关连接。
+        _DRAIN_LIMIT = 1 << 20
+
+        #: 本次请求体是否已经被读过（无论读去解析还是读去丢弃）。
+        _body_read = False
+
+        def _drain_body(self) -> None:
+            """把还没读的请求体读掉，再回响应。
+
+            为什么非读不可：客户端（urllib、浏览器 fetch）POST 时是「先写头、
+            再写体」，服务端如果在读完体之前就回响应并关连接，客户端还在写的那
+            一段会撞上 RST。Windows 上的表现是 `ConnectionAbortedError
+            [WinError 10053]`，用户看到的是「fetch failed」而不是「你没权限」——
+            排查方向会整个错掉。
+
+            这不是理论问题：全量跑 340 个用例时 `test_write_endpoints_are_guarded`
+            就挂在这里，单跑该文件却全绿（连接复用与写入时序不同）。同一个坑在
+            422 的提前返回路径上又出现过一次（`test_panel_plans.py`），所以这里
+            不挂在某一条分支上，而是挂在 `_send_json` 里，让**所有**响应都覆盖到。
+
+            超大请求体直接放弃读取并关连接：为了回一条错误去读几十兆是白送一个
+            DoS 入口，而真客户端不会往被拒的接口塞那么大的体。
+            """
+            if self._body_read:
+                return
+            self._body_read = True
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except (TypeError, ValueError):
+                length = 0
+            if length <= 0:
+                return
+            if length > self._DRAIN_LIMIT:
+                self.close_connection = True
+                return
+            with contextlib.suppress(OSError, ValueError):
+                self.rfile.read(length)
+
+        def _request_path(self) -> str:
+            """返回不带 query 的已解码路径。"""
+            return unquote(urlparse(self.path).path)
+
+        def _is_public(self) -> bool:
+            """判断本次请求是否免鉴权。
+
+            免鉴权三类，每一类都有明确理由：
+            - `/api/health`：插件用它探活，探活前它还没拿到/还没下发 token；
+            - `/`、`/index.html`、`/static/*`：浏览器要能先加载页面，页面里的
+              JS 才可能去读 token 并带上。静态资源本身不含任何用户数据；
+            - `OPTIONS`：CORS 预检不带自定义头，挡住会让浏览器场景直接报跨域错。
+            """
+            if self.command == "OPTIONS":
+                return True
+            path = self._request_path()
+            if path == "/api/health":
+                return True
+            if path in ("/", "/index.html"):
+                return True
+            return path.startswith("/static/")
+
+        def _presented_token(self) -> str:
+            """取出客户端提供的令牌：优先自定义头，其次 Bearer。"""
+            direct = str(self.headers.get("X-Ndecon-Token") or "").strip()
+            if direct:
+                return direct
+            authorization = str(self.headers.get("Authorization") or "").strip()
+            if authorization.lower().startswith("bearer "):
+                return authorization[len("bearer ") :].strip()
+            return ""
+
+        def _token_ok(self) -> bool:
+            """常量时间比较令牌，避免按字节流的时间差猜 token。"""
+            if not self.panel_token:
+                return True
+            presented = self._presented_token()
+            if not presented:
+                return False
+            return hmac.compare_digest(presented, self.panel_token)
 
         def _dispatch(self, handler) -> None:
             """执行一次请求处理；任何未捕获异常都转成 JSON 500，绝不断开连接。
@@ -191,8 +318,20 @@ un_server 传 server.jobs），不能在这里新建：
             连接，客户端拿到的是 `fetch failed`，界面上显示「无法连接引擎」。
             用户会去查引擎为什么崩，而真相是某个业务异常没被分类。
             兜底这一层让「引擎连不上」与「这个请求失败了」变成两件不同的事。
+
+            鉴权放在这里：五个 do_* 全走它，漏一条路的可能性为零。
+            401 必须直接写响应后 return，不能 raise —— 抛异常会被下面的
+            except 包成 500，客户端就分不清「没权限」和「服务端炸了」。
             """
             try:
+                if not self._is_public() and not self._token_ok():
+                    self._drain_body()
+                    self._error(
+                        401,
+                        "缺少或错误的访问令牌：请从插件面板打开；"
+                        "如果是自己用命令行起的引擎，去掉 --token 即可恢复免鉴权。",
+                    )
+                    return
                 handler()
             except Exception as exc:  # noqa: BLE001 - 兜底必须吞掉一切，否则断连接
                 traceback.print_exc()
@@ -255,8 +394,14 @@ un_server 传 server.jobs），不能在这里新建：
                     self._get_batch_job(parts[2], parts[4])
                 elif len(parts) == 4 and parts[3] == "runs":
                     self._list_runs(parts[2])
+                elif len(parts) == 3:
+                    self._get_project(parts[2])
                 else:
-                    self._get_project(path.split("/")[3])
+                    # 到这里说明路径是 /api/projects/<id>/<未知尾巴>。
+                    # 早前这里是 `self._get_project(path.split("/")[3])`，
+                    # 等于把任何多段尾巴都当成「取整个项目」——路径写错也照样
+                    # 回 200 全量数据，客户端会把拼错的路由误当成成功。
+                    self._error(404, "未知接口")
                 return
             self._serve_static(path)
 
@@ -377,14 +522,44 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(404, "未知接口")
 
         def _route_DELETE(self) -> None:
-            """处理 DELETE：删除项目。"""
+            """处理 DELETE：删除项目。
+
+            只接受 /api/projects/<id> 这一种形状。早前这里用
+            `path.startswith("/api/projects/")` 判断，于是
+            `/api/projects/<id>/任意后缀` 也会删掉整个项目——路径写错不会报错，
+            只会让书没了。`_route_PATCH` 早就用的是精确段数校验，这里跟它对齐。
+
+            另外两条判据（功能审计 B-4）：
+
+            * 项目本来就不存在时**仍然回 200**，但在响应体里如实标
+              `"existed": false`。为什么不是 404：DELETE 在 REST 里是幂等的，
+              界面上的删除按钮真的会被连点两次（第一次请求还在飞，第二次已经
+              发出），第二次回 404 会让前端弹一个「项目不存在」的红字，用户
+              以为删失败了。`test/ops-e2e.mjs` 也把幂等当既有契约断言。
+              诚实靠 `existed` 这个字段，而不是靠状态码撒谎。
+            * 有连写在跑时回 409。后台线程每章都会 `mkdir(parents=True,
+              exist_ok=True)` 重建目录树，边写边删的结局是半个项目目录——
+              正文写了一半、project.json 没了。
+            """
             path = unquote(urlparse(self.path).path)
-            if path.startswith("/api/projects/"):
-                project_id = path.split("/")[3]
-                store.delete(project_id)
-                self._send_json(200, {"deleted": project_id})
-            else:
+            parts = path.strip("/").split("/")
+            if not (len(parts) == 3 and parts[:2] == ["api", "projects"]):
                 self._error(404, "未知接口")
+                return
+            project_id = parts[2]
+            running = job_registry.running_for(project_id)
+            if running is not None:
+                self._send_json(409, {
+                    "error": f"这个项目正在连写（{running.run_id}），先暂停并等当前章写完再删。",
+                    "run_id": running.run_id,
+                })
+                return
+            try:
+                removed = store.delete(project_id)
+            except ValueError as exc:
+                self._error(400, str(exc))
+                return
+            self._send_json(200, {"deleted": project_id, "existed": removed})
 
         # ---- API 实现 ----
 
@@ -396,20 +571,28 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(404, "项目不存在")
 
         def _import_reference(self, payload: dict) -> None:
-            """导入小说：跑离线 Fake 拆书管道并入库（不复制原文）。"""
+            """导入小说：跑离线 Fake 拆书管道并入库（不复制原文）。
+
+            错误文案里只回文件名，不回完整路径。原实现把用户给的 `file_path`
+            与底层 `OSError` 的原文一起回显——`OSError` 的 str 里带着解析后的
+            绝对路径，等于把「这台机器上哪个目录存在」告诉任何能打到面板的人。
+            """
             name = str(payload.get("name", "")).strip()
             source = str(payload.get("file_path", "")).strip()
             source_path = Path(source)
             if not source_path.is_file():
-                self._error(400, f"源文件不存在：{source}")
+                self._error(400, f"源文件不存在：{source_path.name or '（未提供路径）'}")
                 return
             try:
                 text = source_path.read_text(encoding="utf-8")
                 bundle = run_analyze(text, name or source_path.stem, FakeProvider())
-            except (OSError, UnicodeDecodeError, ValueError) as exc:
-                self._error(400, f"导入失败：{exc}")
+            except (OSError, UnicodeDecodeError) as exc:
+                self._error(400, f"读取源文件失败：{type(exc).__name__}")
                 return
-            project_id = new_project_id("reference", name or source_path.stem)
+            except ValueError as exc:
+                self._error(400, f"拆书失败：{exc}")
+                return
+            project_id = store.allocate_project_id("reference", name or source_path.stem)
             project = ReferenceProject(
                 meta=ProjectMeta(
                     id=project_id, kind="reference", title=bundle.book_title,
@@ -430,7 +613,7 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(400, "title 必填")
                 return
             reference_ids = [str(x) for x in payload.get("reference_ids", [])]
-            project_id = new_project_id("creation", title)
+            project_id = store.allocate_project_id("creation", title)
             project = CreationProject(
                 meta=ProjectMeta(
                     id=project_id, kind="creation", title=title, created_at=store.now_iso()
@@ -446,14 +629,32 @@ un_server 传 server.jobs），不能在这里新建：
             """校验并保存面板 LLM 配置（key 仅进进程内存）。
 
             同一供应商再次保存且 key 留空时，保留会话中已有的 key（便于只改模型/URL）。
+
+            但「同一供应商」不够 —— 还得是**同一台服务器**。原实现只比 provider id：
+            攻击者发一个 `provider` 不变、`base_url` 指向自己的请求，就能让引擎把
+            已存的真 key 作为 `Authorization: Bearer` 发出去（`llm/session.py` 的
+            `test_connection` 与 provider 都直接用它）。插件自己就用 `provider:'custom'`，
+            所以这条链是完全可执行的。
+
+            现在的判据：provider 相同 **且** origin 相同（scheme+host+port）才复用 key。
+            只比 origin 不比整串 URL，是因为换路径前缀（`/v1` → `/openai/v1`）很常见；
+            而 host 一变就意味着密钥要去别人家，必须让用户重新填。
             """
             payload = dict(payload)
-            if (
-                not str(payload.get("api_key", "")).strip()
-                and llm_session.provider == str(payload.get("provider", "")).strip()
-                and llm_session.api_key
-            ):
-                payload["api_key"] = llm_session.api_key
+            if not str(payload.get("api_key", "")).strip():
+                same_provider = llm_session.provider == str(payload.get("provider", "")).strip()
+                incoming = str(payload.get("base_url", "")).strip()
+                # 空 base_url 表示「沿用预设默认」，那是可信的预置值，按同源处理。
+                same_host = (not incoming) or same_origin(incoming, llm_session.base_url)
+                if same_provider and same_host and llm_session.api_key:
+                    payload["api_key"] = llm_session.api_key
+                elif same_provider and not same_host and llm_session.api_key:
+                    self._error(
+                        400,
+                        "改了服务器地址就必须重新填写 API key："
+                        "已保存的 key 只在原地址上复用，不会跟着新地址发出去。",
+                    )
+                    return
             config, error = validate_config_payload(payload)
             if error is not None:
                 self._error(400, error)
@@ -1727,28 +1928,41 @@ def run_server(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
+    token: str = "",
 ) -> ThreadingHTTPServer:
-    """构建并返回面板服务器（已 listen，未 serve_forever；便于测试与 CLI 复用）。"""
+    """构建并返回面板服务器（已 listen，未 serve_forever；便于测试与 CLI 复用）。
+
+    token 非空时开启访问校验，并把 token 挂到 server 上供 api_request 使用。
+    """
     store = WorkspaceStore(workspace)
     llm_session = LLMSession()
     jobs = JobRegistry()
-    server = ThreadingHTTPServer((host, port), create_handler(store, llm_session, jobs))
+    server = ThreadingHTTPServer(
+        (host, port), create_handler(store, llm_session, jobs, token=token)
+    )
     server.workspace_store = store  # type: ignore[attr-defined]
     server.llm_session = llm_session  # type: ignore[attr-defined]
     server.jobs = jobs  # type: ignore[attr-defined]
+    server.panel_token = token  # type: ignore[attr-defined]
     return server
 
 
-def serve_in_thread(workspace: Path, *, port: int = 8765) -> tuple[ThreadingHTTPServer, threading.Thread]:
+def serve_in_thread(
+    workspace: Path, *, port: int = 8765, token: str = ""
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
     """在守护线程中启动面板，主要供测试使用。"""
-    server = run_server(workspace, port=port)
+    server = run_server(workspace, port=port, token=token)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
 
 
 def api_request(server: ThreadingHTTPServer, method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
-    """测试辅助：不经网络栈直接向服务器发 JSON 请求（使用本地 socket）。"""
+    """测试辅助：不经网络栈直接向服务器发 JSON 请求（使用本地 socket）。
+
+    服务器开了访问校验时，这里自动带上 `X-Ndecon-Token`：测试用例不该
+    为了鉴权在每个断言里重复拼头，鉴权本身另有专门用例覆盖。
+    """
     import urllib.request
 
     host, port = server.server_address[0], server.server_address[1]
@@ -1756,6 +1970,9 @@ def api_request(server: ThreadingHTTPServer, method: str, path: str, payload: di
     url = f"http://{host}:{port}{safe_path}"
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     headers = {"Content-Type": "application/json; charset=utf-8"} if data is not None else {}
+    token = getattr(server, "panel_token", "")
+    if token:
+        headers["X-Ndecon-Token"] = token
     request: Request = Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:

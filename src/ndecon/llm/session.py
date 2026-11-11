@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 
 import httpx
@@ -108,6 +110,74 @@ class LLMSession:
             )
 
 
+def _origin_of(base_url: str) -> tuple[str, str, int]:
+    """把 base_url 折成 (scheme, host, port)；解析不了就返回空元组。
+
+    只比 origin 不比整串：同一台服务换个路径前缀（`/v1` → `/openai/v1`）很常见，
+    不该被当成「换了服务器」；而 host 一变就意味着密钥要去别人家，必须拦。
+    """
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").lower()
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return ("", "", 0)
+    return (scheme, host, port)
+
+
+def same_origin(a: str, b: str) -> bool:
+    """两个 base_url 是否指向同一台服务器（用于判断能不能复用已存的 key）。"""
+    if not a or not b:
+        return False
+    left, right = _origin_of(a), _origin_of(b)
+    return bool(left[1]) and left == right
+
+
+#: 永不接受的目标地址段。SSRF 的经典目标是云厂商元数据服务（169.254.169.254），
+#: 它就在链路本地段里；0.0.0.0 / :: 与组播地址同样没有正当用途。
+#:
+#: 只封这几段、不封 RFC1918（192.168/10./172.16）是**有意的**：本地推理服务
+#: （Ollama、LM Studio、vLLM）默认就监听在局域网上，一封死等于把「用自己的
+#: 机器跑模型」这条正当用法砍掉。而回环段更不能封 —— 插件的模型桥就架在
+#: 127.0.0.1 上，封了它整条链路直接断。
+_BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(net)
+    for net in (
+        "0.0.0.0/8",
+        "169.254.0.0/16",  # 链路本地 + 云元数据
+        "224.0.0.0/4",  # IPv4 组播
+        "::/128",
+        "fe80::/10",  # IPv6 链路本地
+        "ff00::/8",  # IPv6 组播
+    )
+)
+
+
+def _blocked_reason(host: str) -> str:
+    """host 命中禁用地址段时返回原因，否则返回空串。"""
+    if not host:
+        return "地址为空"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # 不是字面 IP。可能是域名 —— 域名解析到元数据地址这条路要靠下面
+        # `test_connection` 里的解析检查兜，这里不拦（否则 api.openai.com
+        # 之类的正常配置会因为「不是 IP」被拒）。
+        return ""
+    candidates = [address]
+    # ::ffff:169.254.169.254 这种 IPv4 映射地址要按 IPv4 再判一次，
+    # 否则换成映射写法就绕过了。
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        candidates.append(mapped)
+    for candidate in candidates:
+        for network in _BLOCKED_NETWORKS:
+            if candidate.version == network.version and candidate in network:
+                return f"{candidate} 属于禁用地址段 {network}"
+    return ""
+
+
 def validate_config_payload(payload: dict) -> tuple[LLMSessionConfig | None, str | None]:
     """校验前端提交的供应商配置；成功返回配置，失败返回错误信息。"""
     provider_id = str(payload.get("provider", "")).strip()
@@ -128,6 +198,9 @@ def validate_config_payload(payload: dict) -> tuple[LLMSessionConfig | None, str
         return None, f"{preset.name} 需要 API key（{preset.key_hint}）"
     if not (base_url.startswith("http://") or base_url.startswith("https://")):
         return None, "base_url 必须以 http:// 或 https:// 开头"
+    reason = _blocked_reason(_origin_of(base_url)[1])
+    if reason:
+        return None, f"base_url 指向不允许的地址（{reason}）"
 
     return LLMSessionConfig(provider=provider_id, api_key=api_key, base_url=base_url, model=model), None
 
