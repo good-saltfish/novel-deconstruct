@@ -13,6 +13,8 @@ import random
 import re
 from collections import Counter
 
+import pytest
+
 from ndecon.creation import txn
 from ndecon.creation.chapters import FakeChapterWriter
 from ndecon.creation.models import (
@@ -256,6 +258,24 @@ def test_run_chapter_commits_and_records(tmp_path, monkeypatch) -> None:
     assert record.attempts == 1
     assert record.summary_present is True
     assert record.output_hash
+
+
+def test_negative_max_repairs_is_rejected_before_writing(tmp_path, monkeypatch) -> None:
+    """负数 max_repairs 必须在动笔前拦住。
+
+    原实现里 `while attempt < max_repairs + 1` 一次都不进，于是既没生成也没过闸门，
+    却报「重写次数超过上限」——用户看到的是一个凭空冒出来的失败，还会以为是模型坏了。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _GoodWriter(_long_text(2600))
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    with pytest.raises(ValueError, match="max_repairs"):
+        txn.run_chapter(store, project, 1, provider="fake", max_repairs=-1)
+    # 什么都不该写下去：正文、摘要、游标都得保持原样
+    assert store.read_manuscript(project.meta.id, 1) is None
+    assert store.get(project.meta.id).cursor == 0
 
 
 def test_run_chapter_keeps_edits_made_during_generation(tmp_path, monkeypatch) -> None:

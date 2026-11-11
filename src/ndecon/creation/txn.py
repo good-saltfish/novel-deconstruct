@@ -173,6 +173,11 @@ def run_chapter(
     """
     if not 1 <= order <= len(project.draft.chapters):
         raise ValueError(f"第 {order} 章不在细纲范围内（当前共 {len(project.draft.chapters)} 章）")
+    if max_repairs < 0:
+        # 负值会让下面的 `while attempt < max_repairs + 1` 一次都不进，
+        # 于是既没生成也没闸门，却报「重写次数超过上限」——一个用户无法理解的
+        # 假失败。调用方（面板/CLI/agent 工具）都该在入口拦住，这里是最后一道。
+        raise ValueError(f"max_repairs 不能是负数（收到 {max_repairs}）")
 
     def phase(name: str, detail: str = "") -> None:
         """报一次进度：先落盘（界面从磁盘读），再交给回调；两者都不许炸。

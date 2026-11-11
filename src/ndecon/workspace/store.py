@@ -125,6 +125,11 @@ class WorkspaceStore:
                 metas.append(ProjectMeta(**data["meta"]))
             except (KeyError, json.JSONDecodeError, ValueError):
                 continue
+            except OSError:
+                # Windows 上另一个进程（编辑器、网盘同步、杀毒）正拿着这个文件时，
+                # 读会抛 WinError 32。它跟「文件坏了」一样只是这一个项目读不出来，
+                # 不该让整个项目列表 500——那会让用户以为书全没了。
+                continue
         metas.sort(key=lambda m: m.created_at)
         return metas
 
