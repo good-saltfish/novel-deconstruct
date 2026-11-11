@@ -50,7 +50,11 @@ where = ["src"]
 "ndecon.panel" = ["web/*.html", "web/*.js", "web/*.css"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "." 不能省：tests 之间互相 import（test_run_progress 用 test_creation_txn 的夹具
+# 工厂）走的是 `from tests.unit.xxx import ...`。`python -m pytest` 会把 cwd 塞进
+# sys.path 所以本机一直能跑，而 CI 和任何用 `pytest` 控制台脚本跑的环境不会，
+# 于是只在 GitHub Actions 上炸出 ModuleNotFoundError: No module named 'tests'。
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-q"
 
