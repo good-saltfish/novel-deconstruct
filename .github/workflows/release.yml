@@ -70,11 +70,26 @@ jobs:
         with:
           name: distributions
           path: dist
+      # PyPI 走 trusted publishing：仓库上必须先配好 OIDC 信任关系（PyPI 网页 →
+      # Publishing → GitHub），否则这一步必然失败。用一个仓库变量当开关，
+      # 让「代码已发、PyPI 还没配」这种中间状态也能出一个正常的 Release，
+      # 而不是让每次发版都挂一个大红叉。
+      # 配好之后执行 `gh variable set PYPI_READY -b true` 即可自动发布。
+      - name: PyPI trusted publisher 未配置时跳过发布
+        if: vars.PYPI_READY != 'true'
+        run: |
+          echo "::warning::跳过 PyPI 发布：仓库变量 PYPI_READY 不是 true。"
+          echo "配好 PyPI trusted publisher 后执行：gh variable set PYPI_READY -b true"
       - name: Publish to PyPI
+        if: vars.PYPI_READY == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          # 另存一份不带版本号的 wheel：插件的兜底安装路径要用
+          # releases/latest/download/<固定名>，带版本号的文件名一下个版本就 404。
+          WHEEL=$(ls dist/*.whl)
+          cp "$WHEEL" dist/novel-deconstruct-py3-none-any.whl
           gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
