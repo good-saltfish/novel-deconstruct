@@ -399,8 +399,14 @@ def select_candidate(
     previous = store.read_manuscript(project.meta.id, order)
     try:
         store.write_manuscript(project.meta.id, order, content)
-        store.write_summary(project.meta.id, order, summary.model_dump())
-        project.manuscripts[f"ch{order}"] = ManuscriptRecord(
+        # 与 `txn.py` 同口径：摘要写失败不连累正文（正文已选定且过完闸门），
+        # 缺口由 `summarize.missing_summary_orders` 扫盘发现并 backfill。
+        summary_written = True
+        try:
+            store.write_summary(project.meta.id, order, summary.model_dump())
+        except OSError:
+            summary_written = False
+        record_manuscript = ManuscriptRecord(
             order=order,
             title=target.title,
             status="auto-accepted" if accepted else "draft",
@@ -410,8 +416,20 @@ def select_candidate(
             updated_at=store.now_iso(),
             review=review,
         )
-        project.cursor = max(project.cursor, order)
-        store.save_creation(project)
+
+        def _apply(latest: CreationProject) -> None:
+            """只盖本章这两个字段：候选是几十秒前生成的，内存快照早就过期了。
+
+            和 `txn.py` 同一个事故（功能审计 B-2）：原实现整份 `save_creation`，
+            把用户在挑选期间做的编辑一起抹掉。
+            """
+            latest.manuscripts[f"ch{order}"] = record_manuscript
+            latest.cursor = max(latest.cursor, order)
+
+        project = store.update_creation(project.meta.id, _apply)
+        # 同上：摘要到底落下没有，问盘。`mechanical_summary` 保证有内容，
+        # 但写盘仍可能失败；写死了就变成「永远有摘要」的自证。
+        summary_present = summary_written and store.read_summary(project.meta.id, order) is not None
     except Exception as exc:  # noqa: BLE001 - 提交失败必须回滚到选之前那一版
         if previous is not None:
             store.write_manuscript(project.meta.id, order, previous, keep_version=False)
@@ -432,5 +450,6 @@ def select_candidate(
         "cjk_chars": report.cjk_chars,
         "status": "auto-accepted" if accepted else "draft",
         "summary_source": summary_source,
+        "summary_present": summary_present,
         "hard_failures": [failure.rule for failure in report.hard_failures],
     }

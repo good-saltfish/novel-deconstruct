@@ -72,6 +72,58 @@ def test_creation_roundtrip_with_draft(tmp_path) -> None:
     assert store.list_projects()[0].title == "我的书"
 
 
+def test_update_creation_only_touches_named_fields(tmp_path) -> None:
+    """`update_creation` 必须保留盘上的最新值，不能整份覆盖。
+
+    真事故（功能审计 B-2）：连写线程在生成前读一份快照，生成结束整份写回，
+    期间用户在面板里做的编辑被静默抹掉。这里直接模拟那个时序：
+    拿到快照 → 别人改盘 → 自己只改 cursor → 断言别人的改动还在。
+    """
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-race-1", "creation", "抢写书"),
+        genre="末世",
+        premise="最初前提",
+    )
+    store.save_creation(project)
+
+    stale = store.get("creation-race-1")
+    assert isinstance(stale, CreationProject)
+
+    # 另一个线程（HTTP 侧）在这期间改了设定并保存
+    other = store.get("creation-race-1")
+    assert isinstance(other, CreationProject)
+    other.premise = "用户在生成期间改过的最新前提"
+    other.confirmed_parts["positioning"] = "human-confirmed"
+    store.save_creation(other)
+
+    # 连写线程跑完，只声明自己改了 cursor
+    def _apply(latest: CreationProject) -> None:
+        latest.cursor = 7
+
+    updated = store.update_creation("creation-race-1", _apply)
+    assert updated.cursor == 7
+    # 关键断言：过期快照没把别人的改动冲掉
+    assert updated.premise == "用户在生成期间改过的最新前提"
+    assert updated.confirmed_parts["positioning"] == "human-confirmed"
+
+    reloaded = store.get("creation-race-1")
+    assert isinstance(reloaded, CreationProject)
+    assert reloaded.premise == "用户在生成期间改过的最新前提"
+
+
+def test_update_creation_raises_keyerror_and_creates_no_dir(tmp_path) -> None:
+    """项目不存在时必须抛 KeyError，且不能顺手造一个空目录。"""
+    store = WorkspaceStore(tmp_path)
+
+    def _noop(_: CreationProject) -> None:
+        raise AssertionError("mutate 不该被调用")
+
+    with pytest.raises(KeyError):
+        store.update_creation("creation-不存在的书-000000", _noop)
+    assert not (tmp_path / "projects" / "creation-不存在的书-000000").exists()
+
+
 def test_legacy_bool_confirmed_parts_migrated(tmp_path) -> None:
     """旧工作区的 bool 状态必须被迁移：True -> human-confirmed，False -> 删键。"""
     store = WorkspaceStore(tmp_path)
@@ -110,11 +162,45 @@ def test_unsafe_id_rejected(tmp_path) -> None:
 
 
 def test_get_missing_raises_keyerror_and_delete_idempotent(tmp_path) -> None:
-    """读取不存在项目抛 KeyError；删除不存在项目不报错。"""
+    """读取不存在项目抛 KeyError；删除不存在项目不报错但要说清楚没删到。"""
     store = WorkspaceStore(tmp_path)
     with pytest.raises(KeyError):
         store.get("nope")
-    store.delete("nope")  # 不抛异常
+    assert store.delete("nope") is False
+
+
+def test_allocate_project_id_is_unique_within_same_second(tmp_path) -> None:
+    """同一秒用同一个标题连建两次，必须拿到两个不同 ID。
+
+    直接的动机：`new_project_id` 只把时间戳拼到秒，同秒同标题必然撞；
+    而 `_project_dir` 是 `mkdir(exist_ok=True)`，第二次创建会静默覆盖
+    第一次的 project.json（功能审计 B-1：用户看到新建成功，书没了）。
+    """
+    store = WorkspaceStore(tmp_path)
+    first = store.allocate_project_id("creation", "撞名测试")
+    second = store.allocate_project_id("creation", "撞名测试")
+    assert first != second
+    assert (tmp_path / "projects" / first).is_dir()
+    assert (tmp_path / "projects" / second).is_dir()
+
+
+def test_allocate_project_id_never_reuses_existing_dir(tmp_path) -> None:
+    """已存在的目录（哪怕人工造出来）必须被跳过，不能被当成自己的。"""
+    store = WorkspaceStore(tmp_path)
+    existing = store.allocate_project_id("creation", "占位")
+    (tmp_path / "projects" / existing / "project.json").write_text("{}", encoding="utf-8")
+    fresh = store.allocate_project_id("creation", "占位")
+    assert fresh != existing
+    assert (tmp_path / "projects" / existing / "project.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_allocate_project_id_raises_after_attempts_exhausted(tmp_path) -> None:
+    """抢不到就抛错，而不是返回一个会覆盖别人的 ID。"""
+    store = WorkspaceStore(tmp_path)
+    first = store.allocate_project_id("creation", "满额", attempts=1)
+    with pytest.raises(RuntimeError):
+        store.allocate_project_id("creation", "满额", attempts=1)
+    assert (tmp_path / "projects" / first).is_dir()
 
 
 def test_manuscript_write_read_and_scoped_path(tmp_path) -> None:

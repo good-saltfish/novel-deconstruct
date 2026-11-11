@@ -258,6 +258,77 @@ def test_run_chapter_commits_and_records(tmp_path, monkeypatch) -> None:
     assert record.output_hash
 
 
+def test_run_chapter_keeps_edits_made_during_generation(tmp_path, monkeypatch) -> None:
+    """生成期间用户在面板里的编辑，不能被提交段的整份覆盖冲掉。
+
+    真事故（功能审计 B-2）：`run_chapter` 在生成前把项目读进内存，真模型一章
+    几十秒到几分钟；这段时间 HTTP 侧改了设定/骨架，章节跑完时整份
+    `save_creation(project)` 与会话里的过期快照一起写回，用户的编辑静默消失。
+    这个测试让 writer 在「生成中」去改盘，验证改动仍在。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+
+    class _EditingWriter(_GoodWriter):
+        def write_chapter(self, pack):  # noqa: ANN001, ANN201
+            # 模拟生成期间 HTTP 线程保存了用户改动
+            during = store.get(project.meta.id)
+            assert isinstance(during, CreationProject)
+            during.premise = "用户在生成期间改过的最新前提"
+            during.confirmed_parts["protagonist"] = "human-confirmed"
+            store.save_creation(during)
+            return super().write_chapter(pack)
+
+    writer = _EditingWriter(_long_text(2600))
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake")
+    assert outcome.status == "committed"
+
+    reloaded = store.get(project.meta.id)
+    assert isinstance(reloaded, CreationProject)
+    # 本次真正要改的两个字段生效了
+    assert reloaded.cursor == 1
+    assert reloaded.manuscripts["ch1"].status == "auto-accepted"
+    # 而生成期间别人的编辑没被冲掉
+    assert reloaded.premise == "用户在生成期间改过的最新前提"
+    assert reloaded.confirmed_parts["protagonist"] == "human-confirmed"
+
+
+def test_run_chapter_reports_missing_summary_from_disk(tmp_path, monkeypatch) -> None:
+    """`summary_present` 必须来自磁盘回读，不能写死 True。
+
+    功能审计 H-5：原来 `summary_present = True` 是硬编码的，于是
+    `gates.check_chapter` 的 `summary_missing` 硬门**永远不可能触发**。
+    这里让摘要写盘静默失败（模拟磁盘满/文件被占用），断言 run 记录如实标 False。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _GoodWriter(_long_text(2600))
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    def _drop_summary(project_id: str, order: int, payload: dict):  # noqa: ANN202
+        raise OSError("磁盘满（测试模拟）")
+
+    monkeypatch.setattr(store, "write_summary", _drop_summary)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake")
+    # 摘要写失败不该连累正文（模块文档第 3 条的语义），这一章仍然提交成功，
+    # 但 run 记录必须如实标 summary_present=False。
+    assert outcome.status == "committed"
+    assert outcome.summary_present is False
+    assert store.read_manuscript(project.meta.id, 1) is not None
+    assert store.read_summary(project.meta.id, 1) is None
+
+    run = RunLog(store.projects_dir / project.meta.id, outcome.run_id)
+    record = run.read(1)
+    assert record is not None and record.summary_present is False
+    # `summarize.missing_summary_orders` 应该能看见这个缺口，交给 backfill 补
+    from ndecon.creation.summarize import missing_summary_orders
+
+    assert missing_summary_orders(store, project.meta.id, 1) == [1]
+
+
 def test_run_chapter_rolls_back_on_reject(tmp_path, monkeypatch) -> None:
     """不可修复的失败（乱码）必须整章回滚：不留正文、不留记录、不推游标。"""
     store = _store(tmp_path)

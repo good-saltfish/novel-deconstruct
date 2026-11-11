@@ -10,10 +10,34 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from tests.unit.test_creation_txn import _long_text, _project, _store
 
 from ndecon.creation.jobs import JOB_FINISHED, JOB_RUNNING, BatchJob, job_status
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["..", ".", "con", "CON", "a/b", "a\\b", "ch:1", "", "   ", "x" * 70],
+)
+def test_run_id_rejects_traversal_and_reserved(tmp_path, bad) -> None:
+    """run_id 来自 HTTP 请求体，必须是单段安全文件名。
+
+    原判据只挡 `/` 与 `\\`，而 `..` 两个都不含——它会让 ch001.json 与
+    job.json 落到项目目录之外（功能审计 B-3）。Windows 侧还要挡设备名，
+    否则 `con` 会打开控制台设备而不是文件。
+    """
+    with pytest.raises(ValueError):
+        RunLog(tmp_path, bad)
+
+
+@pytest.mark.parametrize("good", ["run-20261109-232900", "run-x", "a.b", "R_1"])
+def test_run_id_accepts_normal_ids(tmp_path, good) -> None:
+    """正常的 run_id 不能被误杀。"""
+    log = RunLog(tmp_path, good)
+    assert log.run_id == good
+    assert log.dir == tmp_path / "runs" / good
 
 
 def test_touch_phase_writes_to_disk(tmp_path) -> None:

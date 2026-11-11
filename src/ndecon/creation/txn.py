@@ -312,16 +312,27 @@ def run_chapter(
             core_event=getattr(target, "core_event", "") or "",
         )
         summary_source = "mechanical"
-    summary_present = True
 
     # 4) 提交：正文 + 摘要 + project.json 一起落，失败则回滚正文
     phase("commit", "写正文与游标")
+    summary_present = False  # 提交成功后才回读磁盘填真值（见下方注释）
     previous = store.read_manuscript(project.meta.id, order)
     try:
         store.write_manuscript(project.meta.id, order, content)
+        # 摘要写盘失败**不该**毁掉这一章：正文已经生成好、过完闸门了，
+        # 把它整章回滚等于因为一本附录没印好就把书撕了。模块文档第 3 条
+        # 说的就是这个意思（「产摘要，失败不影响正文，但 run 记录标
+        # summary_present=False」），而原实现把写摘要放进了提交 try 里，
+        # 一旦失败就整章回滚 —— 文档与代码互相矛盾，代码这边是错的。
+        # 缺口不会永久存在：`summarize.missing_summary_orders` / `backfill_summaries`
+        # 专门扫盘补这种洞。
+        summary_written = True
         if summary is not None:
-            store.write_summary(project.meta.id, order, summary.model_dump())
-        project.manuscripts[f"ch{order}"] = ManuscriptRecord(
+            try:
+                store.write_summary(project.meta.id, order, summary.model_dump())
+            except OSError:
+                summary_written = False
+        record_manuscript = ManuscriptRecord(
             order=order,
             title=target.title,
             status="auto-accepted" if auto_accept else "draft",
@@ -331,8 +342,28 @@ def run_chapter(
             updated_at=store.now_iso(),
             review=getattr(writing, "review", None),
         )
-        project.cursor = max(project.cursor, order)
-        store.save_creation(project)
+
+        def _apply(latest: CreationProject) -> None:
+            """只盖本章这两个字段，其余字段保留盘上的最新值。
+
+            真事故（功能审计 B-2）：这里原来写的是 `store.save_creation(project)`，
+            而 `project` 是**生成开始前**读进内存的快照。真模型一章 25 秒到几分钟，
+            这期间用户在面板里改的设定、存的骨架部件、选的候选版本，全被这份
+            过期快照整份覆盖掉 —— 用户看到的是「我刚存的东西怎么没了」。
+            """
+            latest.manuscripts[f"ch{order}"] = record_manuscript
+            latest.cursor = max(latest.cursor, order)
+
+        project = store.update_creation(project.meta.id, _apply)
+        # 摘要是否真的在盘上，问盘，不问变量。
+        #
+        # 原来这里写死 `summary_present = True`，注释是「摘要还没跑，先不判这一项」——
+        # 那句话漏掉了下半截：`gates.check_chapter` 的 `summary_missing` 硬门因此
+        # **永远不可能触发**（功能审计 H-5）。现在的口径是：机械兜底保证摘要一定有
+        # 内容，但写盘可能失败（磁盘满、文件被占用），所以提交后回读一次，
+        # 用真实存在与否填这个字段——run 记录里的 `summary_present` 从此是证据，
+        # 不是声明。
+        summary_present = summary_written and store.read_summary(project.meta.id, order) is not None
     except Exception as exc:  # noqa: BLE001 - 提交失败必须回滚正文，不能留半提交
         if previous is not None:
             store.write_manuscript(project.meta.id, order, previous, keep_version=False)

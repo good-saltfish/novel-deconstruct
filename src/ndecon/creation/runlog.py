@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -28,6 +29,17 @@ from ndecon.workspace.atomic import atomic_write_json, read_text_with_retry
 
 RunStatus = Literal["in_progress", "committed", "rolled_back", "failed"]
 GateVerdict = Literal["pass", "repair", "reject"]
+
+#: run_id 允许的形状。为什么用白名单而不是「挡掉 / 和 \」：`..` 不含斜杠，
+#: 用 ``project_dir / "runs" / ".."`` 会让记录落到项目根之外（功能审计 B-3，
+#: `run_id` 由 HTTP 请求体直接给定，是可执行路径）。白名单同时挡掉 `..`、
+#: 盘符、NTFS 数据流（`x:y`）和 Windows 保留名（CON/PRN/NUL）。
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
 
 
 class ChapterRun(BaseModel):
@@ -93,11 +105,19 @@ class RunLog:
     """一次连跑的记录目录（projects/<id>/runs/<run_id>/）。"""
 
     def __init__(self, project_dir: Path, run_id: str) -> None:
-        """绑定到项目目录与 run_id；目录在第一次写入时创建。"""
-        if not run_id or "/" in run_id or "\\" in run_id:
+        """绑定到项目目录与 run_id；目录在第一次写入时创建。
+
+        `run_id` 来自 HTTP 请求体（`server.py` 的 `payload.get("run_id")`），
+        所以这里必须当成不可信输入。原判据只挡 `/` 与 `\\`，而 ``".."`` 两个
+        都不含 —— ``runs/../ch001.json`` 会写到项目根目录，把记录糊到
+        project.json 旁边。现在改成白名单：只允许字母数字与 ``_ . -``，
+        且必须以字母数字开头（从而排除 ``.`` 与 ``..``）。
+        """
+        text = str(run_id or "").strip()
+        if not text or not _SAFE_RUN_ID.match(text) or text.split(".")[0].lower() in _RESERVED:
             raise ValueError(f"非法 run_id：{run_id!r}")
         self.project_dir = Path(project_dir)
-        self.run_id = run_id
+        self.run_id = text
 
     @property
     def dir(self) -> Path:

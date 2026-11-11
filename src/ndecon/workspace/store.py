@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from ndecon.retrieval.bm25 import BM25Index
 from ndecon.workspace.atomic import (
     atomic_write_json,
     atomic_write_text,
+    path_lock,
     read_text_with_retry,
 )
 from ndecon.workspace.models import (
@@ -39,7 +41,11 @@ MAX_CHAPTER_VERSIONS = 20
 
 
 def new_project_id(kind: str, title: str) -> str:
-    """生成人类可读且文件系统安全的项目 ID，例如 reference-wbsx-1/creation-mybook-2。"""
+    """生成人类可读且文件系统安全的项目 ID，例如 reference-wbsx-1/creation-mybook-2。
+
+    注意：这个函数**不保证唯一**——时间戳只到秒，同一秒里用同一个标题建两次
+    会得到同一个 ID。要入库请用 `WorkspaceStore.allocate_project_id`。
+    """
     slug = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", title.strip()).strip("-")[:24] or "untitled"
     stamp = datetime.now().strftime("%H%M%S")
     return f"{kind}-{slug}-{stamp}"
@@ -66,6 +72,30 @@ class WorkspaceStore:
         path = self.projects_dir / project_id
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def allocate_project_id(self, kind: str, title: str, *, attempts: int = 50) -> str:
+        """分配一个**独占地**新建的项目 ID，并返回它。
+
+        为什么不能只用 `new_project_id`：它把标题 + `%H%M%S` 拼成 ID，同一秒内
+        用同一个标题建两次得到同一个 ID，`_project_dir` 又是 `mkdir(exist_ok=True)`,
+        于是第二次创建会**静默覆盖**第一次的 project.json（功能审计 B-1）。
+        用户看到的是「新建成功」，实际上一本刚建的书没了。
+
+        这里的做法是先用 `mkdir(exist_ok=False)` 把目录抢下来，抢到才算 ID 归属于
+        自己；撞了就换个后缀重试。目录在这里被建出来是合理的——调用方紧接着就要
+        往里写 project.json，中途失败只会留下一个空目录（下次同 ID 会再撞一次，
+        落到下一个后缀），不会破坏已有项目。
+        """
+        base = new_project_id(kind, title)
+        for index in range(attempts):
+            candidate = base if index == 0 else f"{base}-{index + 1}"
+            _assert_safe(candidate)
+            try:
+                (self.projects_dir / candidate).mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                continue
+            return candidate
+        raise RuntimeError(f"连续 {attempts} 次都没抢到可用的项目 ID（基数：{base}）")
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -99,8 +129,19 @@ class WorkspaceStore:
         return metas
 
     def _path_for(self, project_id: str) -> Path:
-        """返回项目 JSON 文件路径。"""
+        """返回项目 JSON 文件路径（会顺手把目录建出来，供写入用）。"""
         return self._project_dir(project_id) / "project.json"
+
+    def _existing_path_for(self, project_id: str) -> Path:
+        """返回项目 JSON 路径，但**绝不创建目录**（供读取用）。
+
+        为什么单要一个：`_path_for` 会 `mkdir(exist_ok=True)`，于是
+        `store.get("打错的ID")` 在抛 KeyError 之前先在磁盘上造出一个空项目目录。
+        后果不只是脏目录——`delete` 接着就会认为「目录在，删成功了」并返回 True，
+        违反它自己「没删到就返回 False」的契约。读操作不该产生副作用。
+        """
+        _assert_safe(project_id)
+        return self.projects_dir / project_id / "project.json"
 
     def save_reference(self, project: ReferenceProject) -> None:
         """持久化参考书项目。"""
@@ -110,6 +151,33 @@ class WorkspaceStore:
         """持久化创作项目。"""
         self._atomic_write_json(self._path_for(project.meta.id), project.model_dump())
 
+    def update_creation(self, project_id: str, mutate: Callable[[CreationProject], None]) -> CreationProject:
+        """在文件锁内「读最新 → 改 → 写回」，返回改完的项目。
+
+        ## 为什么不能继续用 `save_creation(project)`
+
+        真事故（功能审计 B-2）：``run_chapter`` 在**生成之前**就把项目读进内存，
+        真模型一章要几十秒到几分钟；这段时间里 HTTP 线程可能刚改过同一份
+        ``project.json``（保存骨架部件、确认骨架、改设定、选候选版本）。
+        章节跑完时 ``store.save_creation(project)`` 拿的是**生成开始时那份快照**，
+        整份 ``model_dump()`` 覆盖写盘 —— 用户在那几分钟里做的所有编辑被静默抹掉。
+
+        加锁挡不住这个：锁只保证两次写不交错，不保证第二次写的内容没过期。
+        唯一治法是**写之前重新读盘**，只把本次真正要改的字段盖上去。
+
+        调用方传进来的 ``mutate`` 只应修改它自己的那几个字段，其余字段
+        自动保留盘上的最新值。项目不存在时抛 ``KeyError``（不新建空目录）。
+        """
+        path = self._existing_path_for(project_id)
+        lock = path_lock(path)
+        with lock:
+            if not path.is_file():
+                raise KeyError(f"项目不存在：{project_id}")
+            project = CreationProject(**json.loads(read_text_with_retry(path)))
+            mutate(project)
+            self._atomic_write_json(path, project.model_dump())
+            return project
+
     def get(self, project_id: str) -> ReferenceProject | CreationProject:
         """读取项目并按 kind 还原为对应模型；不存在时抛 KeyError。
 
@@ -117,7 +185,7 @@ class WorkspaceStore:
         现在改为 ``summaries/chNNN.json``。读到非空旧字段时自动迁移出去，
         避免老工作区在摘要外置后"看起来一切正常、实际摘要全丢"。
         """
-        file = self._path_for(project_id)
+        file = self._existing_path_for(project_id)
         if not file.is_file():
             raise KeyError(f"项目不存在：{project_id}")
         data = json.loads(read_text_with_retry(file))
@@ -319,9 +387,17 @@ class WorkspaceStore:
         """删除单章摘要（章节回滚或重跑时用）；不存在时静默。"""
         self.summary_path(project_id, order).unlink(missing_ok=True)
 
-    def delete(self, project_id: str) -> None:
-        """删除整个项目目录（含 manuscripts 子目录）；不存在时静默（删除幂等）。"""
+    def delete(self, project_id: str) -> bool:
+        """删除整个项目目录（含 manuscripts 子目录）。
+
+        返回是否真的删掉了东西：不存在时返回 False 而不是静默成功。
+        幂等性由调用方决定怎么用这个返回值——底层保持「删两次也不会炸」，
+        但面板需要知道「这次到底删没删到」，否则 DELETE 一个打错的 ID 会
+        回 200，用户以为书没了，实际什么也没发生。
+        """
         _assert_safe(project_id)
         path = self.projects_dir / project_id
-        if path.is_dir():
-            shutil.rmtree(path)
+        if not path.is_dir():
+            return False
+        shutil.rmtree(path)
+        return True
