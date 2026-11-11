@@ -174,7 +174,7 @@ evaluate_recall_at_k ──> 仅 tests/unit/test_retrieval_eval_gold.py 调用�
 |---|---|
 | `index.json` 大小 | 21,164,551 字节 |
 | manifest `built_at` | 2026-10-04T21:20:36 |
-| 扫描根 | `D:\myproject\novel-project\网文写作` |
+| 扫描根 | `<素材库根目录>` |
 | 候选文件 / 收录 / 排除 | 772 / **306** / **466** |
 | 总块数 | **29,277** |
 

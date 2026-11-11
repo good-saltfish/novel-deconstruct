@@ -2,7 +2,7 @@
 
 > - 编制日期：2026-10-04
 > - 适用范围：**中文网络小说（长篇连载）**创作过程中的 AI 使用边界与日更工作流
-> - 信源：作者本地素材库 `D:\myproject\novel-project\网文写作\`（已入库 306 文件 / 35659 知识块）
+> - 信源：作者本地素材库 `<你的素材库根目录>\`（已入库 306 文件 / 35659 知识块）
 > - 信源分级标记：**✅ 官方/权威可查** ｜ **⚪ 从业者自述或工程实践（未官方背书）** ｜ **⚠️ 未能验证，仅供参考**
 > - 定位：本文是**人读的操作手册**。工具侧能力以 [roadmap.md](roadmap.md) 与 [ADR](adr/README.md) 为准。
 > - 本文只加文档，不改代码、不改任何冻结项。
@@ -382,7 +382,7 @@
 **当前 KB 状态**：306 文件 / 35659 块（`built_at 2026-10-04`，`.ndecon-workspace/kb/`）。重建命令：
 
 ```powershell
-python -m ndecon.cli kb index --root "D:\myproject\novel-project\网文写作" --workspace .ndecon-workspace
+python -m ndecon.cli kb index --root "<你的素材库根目录>" --workspace .ndecon-workspace
 ```
 
 **⚠️ 入库边界提醒**：版权闸门只按**路径名/文件名/章节启发式**排除，不拦"拆解类文件内部夹带的原文"（ADR-0005 已承认该代价）。本库已实测：`*_前40章_抄书拆解.md` 全部是纯方法论 + 逐章三角分析，**不含成段原文**；唯一需注意的第三方全文摘录是 `后室层级逐层全录_Level0-999官方正文_*.md`（backrooms wiki，CC BY-SA 3.0，非小说版权文本，但属第三方全文）。
