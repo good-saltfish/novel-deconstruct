@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
-from ndecon.creation.models import ManuscriptRecord
+from ndecon.creation.models import ChapterSelfReview, ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
 from ndecon.domain.models import ChapterSummary
@@ -70,6 +70,99 @@ def _style_advisories(style: StyleReport | None) -> list[str]:
     if style is None or not style.findings:
         return []
     return [f"文风：{finding.as_detail()}" for finding in style.findings]
+
+
+# 自评触发重写的上限：一次。
+#
+# 为什么**只有** `outline_followed=False` 能触发重写，而 `hook_strength` 与
+# `info_density` 这两个 1-5 分不能：
+#
+# 那两个分是模型给自己打的主观分，没有任何人类标定分布做对照。真实工作区实测
+# 4 条自评：真模型那一章恒 4/4，`FakeChapterWriter` 恒 3/3 —— 一个从不变化的
+# 数字不构成判据。给它定个「<=2 就重写」的阈值，等于 ① 里刚拆掉的那种假指标
+# 换个位置又建一个：界面上看起来引擎在判质量，实际上永远不会触发。
+#
+# `outline_followed` 不同：它是对一件**人能一眼复核的事**的自认（本章核心事件
+# 有没有按细纲发生），而且必须附 `deviations` 说明偏在哪。实测里它至今没出现过
+# `False`，所以现在打开它不花任何代价；一旦触发，那是一条人拿细纲对照就能验证
+# 的具体指控，不是"模型觉得不太好"。
+#
+# 分数仍然有用——它们进 run 记录与 advisories，等有真实模型批量产出的分布之后
+# 再定阈值。那时候阈值来自数据，不是拍脑袋。
+MAX_SELF_REVIEW_REWRITES = 1
+
+
+def _self_review_flagged(review: ChapterSelfReview | None) -> bool:
+    """自评是否报出了「偏离细纲」这一条可核对的指控。
+
+    缺失自评（老记录、人工编辑过的章）一律当作没指控：没有证据不等于有罪。
+    """
+    if review is None:
+        return False
+    return review.outline_followed is False
+
+
+def _self_review_feedback(review: ChapterSelfReview | None) -> list[str]:
+    """把「偏离细纲」的自评转成回灌 prompt 的具体要求（可直接改的东西）。"""
+    if not _self_review_flagged(review):
+        return []
+    assert review is not None  # 只为类型收窄，逻辑由上句保证
+    lines = ["自评：上一版没有按本章细纲推进。"]
+    deviations = [item.strip() for item in review.deviations if item.strip()]
+    if deviations:
+        lines.extend(f"- {item}" for item in deviations[:5])
+    lines.append("这一版必须让细纲的核心事件真正发生；确有必要的偏离也要比上一版更少、更具体。")
+    return lines
+
+
+def _self_review_advisories(review: ChapterSelfReview | None) -> list[str]:
+    """把自评里值得人看的部分转成一行话，进 advisories。
+
+    分数不进这里：3/5 这种数字对读者没有指导意义，只会制造"引擎说了算"的错觉。
+    进来的是偏离细纲的具体条目——那是作者能直接对着改的东西。
+    """
+    if not _self_review_flagged(review):
+        return []
+    assert review is not None
+    deviations = "；".join(item.strip() for item in review.deviations if item.strip())
+    note = review.notes.strip()
+    detail = deviations or note or "自评未给出具体偏差点"
+    return [f"自评：模型判断本章偏离细纲 —— {detail}"]
+
+
+def _apply_self_review(record: ChapterRun, review: ChapterSelfReview | None) -> None:
+    """把自评抄进 run 记录，使它成为可追溯的证据而不是只活在 project.json 里。
+
+    写 run 记录的两个出口（失败分支、提交分支）都要调它：只记成功那一支的话，
+    「模型说偏离细纲、重写后仍然没救」这种最该被人看见的事故会没有痕迹。
+    """
+    if review is None:
+        return
+    record.review_hook_strength = review.hook_strength
+    record.review_info_density = review.info_density
+    record.review_outline_followed = review.outline_followed
+    record.review_deviations = list(review.deviations)
+
+
+def _is_better(
+    style: StyleReport | None,
+    review: ChapterSelfReview | None,
+    best_style: StyleReport | None,
+    best_review: ChapterSelfReview | None,
+) -> bool:
+    """新一版是否比已收下的那版更值得留下。
+
+    先后顺序是刻意的：先比文风实测越界条数，再比自评有没有报偏离细纲。
+    实测值压在模型自述前面——文风越界能指出具体指标与例句，自评只是一句
+    「我觉得没贴合」。占位正文没做体检（``style=None``）记 0 条，与
+    :func:`_style_findings` 的口径一致，免得模板稿把真稿顶掉。
+    """
+    mine, theirs = _style_findings(style), _style_findings(best_style)
+    if mine != theirs:
+        return mine < theirs
+    return _self_review_flagged(best_review) and not _self_review_flagged(review)
+
+
 # 连续多少章被降级接受后自动暂停整本：3 章说明系统性问题（provider/提示词/设定崩了）
 CONSECUTIVE_DEGRADE_LIMIT = 3
 
@@ -264,10 +357,13 @@ def run_chapter(
     content = ""
     error = ""
     style: StyleReport | None = None
-    # 通过硬门的那一版正文。文风重写只在这之上做增量优化：任何一次重写把章节
-    # 写坏（不再过硬门），都退回这一版——绝不用「文风更像人」换来「这章不合格」。
-    accepted: tuple[str, GateReport, StyleReport | None] | None = None
+    review: ChapterSelfReview | None = None
+    # 通过硬门的那一版正文。文风重写与自评重写都只在这之上做增量优化：任何一次
+    # 重写把章节写坏（不再过硬门），都退回这一版——绝不用「文风更像人」或
+    # 「模型说这版更贴细纲」换来「这章不合格」。
+    accepted: tuple[str, GateReport, StyleReport | None, ChapterSelfReview | None] | None = None
     style_rewrites = 0
+    self_review_rewrites = 0
     while attempt < max_repairs + 1:
         attempt += 1
         # 这里是最耗时的阶段（真模型一章 25 秒到几分钟），进度必须说清楚
@@ -279,6 +375,7 @@ def run_chapter(
             error = f"章节生成失败：{exc}"
             break
         content = writing.content
+        review = getattr(writing, "review", None)
         phase("gate", f"过闸门（正文 {len(content)} 字符）")
         report = check_chapter(
             content,
@@ -303,21 +400,29 @@ def run_chapter(
             error = "闸门判定不可修复：" + "、".join(f.rule for f in report.hard_failures)
             break
         if report.verdict == "pass":
-            if accepted is None or _style_findings(style) < _style_findings(accepted[2]):
-                accepted = (content, report, style)
-            if style is None or len(style.findings) <= STYLE_ADVISORY_LIMIT or style_rewrites >= MAX_STYLE_REWRITES:
+            # 收下「过硬门、文风最干净、自评没报偏离」的那一版。三项按先后比较：
+            # 文风越界条数 > 自评是否报偏离细纲 > 先到先得。后两项不能反过来压在
+            # 文风前面，因为文风越界是**实测值**，自评是模型的**自述**。
+            if accepted is None or _is_better(style, review, accepted[2], accepted[3]):
+                accepted = (content, report, style, review)
+            feedback: list[str] = []
+            if (
+                style is not None
+                and len(style.findings) > STYLE_ADVISORY_LIMIT
+                and style_rewrites < MAX_STYLE_REWRITES
+            ):
+                feedback.extend(f"文风：{line}" for line in style.feedback())
+                style_rewrites += 1
+            if (
+                _self_review_flagged(review)
+                and self_review_rewrites < MAX_SELF_REVIEW_REWRITES
+            ):
+                feedback.extend(_self_review_feedback(review))
+                self_review_rewrites += 1
+            if not feedback or attempt >= max_repairs + 1:
+                # 没有可改的地方，或预算用完：这一版已经过硬门，收下它。
                 break
-            if attempt >= max_repairs + 1:
-                # 预算用完了：这一版已经过硬门，收下它，别为了文风把章节丢掉。
-                break
-            style_rewrites += 1
-            pack = pack.model_copy(
-                update={
-                    "repair_feedback": [
-                        *(f"文风：{line}" for line in style.feedback()),
-                    ]
-                }
-            )
+            pack = pack.model_copy(update={"repair_feedback": feedback})
             continue
         # repair：把失败证据塞回 prompt，让模型带着具体问题重写一版
         previous_feedback = [
@@ -328,9 +433,18 @@ def run_chapter(
         previous_feedback.extend(f"文风：{line}" for line in style.feedback())
         pack = pack.model_copy(update={"repair_feedback": previous_feedback})
 
-    # 收下「过硬门且文风最干净」的那一版；没有就说明这章确实没成。
-    if accepted is not None and (report is None or report.verdict != "pass"):
-        content, report, style = accepted
+    # 收下最好的一版：过硬门、文风越界最少、自评没报偏离细纲。
+    #
+    # 这里必须比「最后一版」而不能只看最后一版：末轮重写可能把章节写得比上一轮
+    # 更差（文风越界反而变多、自评反而报偏离），而两次重写预算都用完了就再也
+    # 改不回来。原实现只在"最后一版没过硬门"时才回退，于是"过硬门但更差"的那版
+    # 会被收下——明明手里有一份更好的。
+    if accepted is not None and (
+        report is None
+        or report.verdict != "pass"
+        or not _is_better(style, review, accepted[2], accepted[3])
+    ):
+        content, report, style, review = accepted
 
     if report is None or report.verdict != "pass":
         record.attempts = attempt
@@ -348,9 +462,11 @@ def run_chapter(
         record.advisories = [
             *(report.advisories if report else []),
             *_style_advisories(style),
+            *_self_review_advisories(review),
         ]
         record.style_score = style.score if style else 0.0
         record.style_details = [f.as_detail() for f in style.findings] if style else []
+        _apply_self_review(record, review)
         record.error = error or "超过修复重试上限"
         record.output_hash = content_hash(content) if content else ""
         run.write(record)
@@ -416,7 +532,10 @@ def run_chapter(
             model_id=getattr(writer, "model_id", ""),
             prompt_version=getattr(writer, "prompt_version", ""),
             updated_at=store.now_iso(),
-            review=getattr(writing, "review", None),
+            # 用收下的那一版的 `review`，不是最后一版 `writing.review`：两者在
+            # 重写回退时会分叉（末轮更差、被 accepted 顶掉），记错就等于给作者一份
+            # 指错方向的评语。
+            review=review,
         )
 
         def _apply(latest: CreationProject) -> None:
@@ -469,9 +588,14 @@ def run_chapter(
     record.cjk_chars = report.cjk_chars
     # 文风体检结果与硬门提示并列进 advisories：它跟「字数偏短」是同一类东西——
     # 不阻断入库，但用户必须看得见，否则等于什么都没查。
-    record.advisories = [*report.advisories, *_style_advisories(style)]
+    record.advisories = [
+        *report.advisories,
+        *_style_advisories(style),
+        *_self_review_advisories(review),
+    ]
     record.style_score = style.score if style else 0.0
     record.style_details = [f.as_detail() for f in style.findings] if style else []
+    _apply_self_review(record, review)
     record.summary_present = summary_present
     record.summary_source = summary_source
     record.status = "committed"

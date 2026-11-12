@@ -13,6 +13,10 @@
 
 ### Fixed
 
+- **模型自评终于参与判断（原来只写进记录给人看）**：`ChapterSelfReview` 从 `#16` 起就每章都生成——`hook_strength` / `info_density`（1-5）、`outline_followed`、`deviations`——但全仓只有面板负责显示，**没有任何逻辑分支读它**。于是「模型自己说这章没按细纲写」这件事，对引擎完全不存在。现在接进 `txn.run_chapter` 的重试循环：`outline_followed is False` 时带上 `deviations` 里的具体偏差点重写一次（上限 1 次，与文风重写同量级），重写完仍报偏离就照常入库并把「自评：模型判断本章偏离细纲 —— …」写进 `advisories`。
+  为什么**只有** `outline_followed` 能触发、1-5 分不能：那两个分是模型给自己打的主观分，没有任何人类标定分布做对照。真实工作区实测 4 条自评——真模型那一章恒 4/4、`FakeChapterWriter` 恒 3/3，一个从不变化的数字不构成判据；给它定「≤2 就重写」的阈值，等于把刚拆掉的假指标换个位置重建。`outline_followed` 不同：它是对一件**人能拿细纲一眼复核**的事的自认，且必须附 `deviations` 说明偏在哪。分数仍然落盘（新增 `ChapterRun.review_hook_strength` / `review_info_density` / `review_outline_followed` / `review_deviations` 四个字段），等真实模型批量产出的分布出来再定阈值——那时候阈值来自数据，不是拍脑袋。
+  顺带修掉两处相关的判断错误：①**「过硬门但更差」的版本会被收下**——原实现只在「最后一版没过硬门」时才回退 `accepted`，末轮重写让文风越界变多也照样入库，明明手里有一份更好的；现在最终选择统一走 `_is_better`（先比文风实测越界条数，再比自评有没有报偏离，实测值压在模型自述前面）。②**`ManuscriptRecord.review` 记的是最后一版**而不是收下的那一版，重写回退时会分叉，等于给作者一份指错方向的评语。
+
 - **报告里章号列表去重并截断**：真实语料重复章号很常见（实测《夜无疆》1269 个章节只有 850 个不同章号，切分器告警但保留），`quiet_chapters` / `hook_openings` / `closing_hook_openings` 会把同一章号连写两遍。改用 `dict.fromkeys` 保序去重；渲染侧 `_render_orders` 只报「共 N 章（前 12 章：…）」，不再把 438 个章号排成一行撑爆知识库页面。
 
 - **连写断点续跑（原来只能从头重来）**：`RunLog` 早就有 `committed_orders()` / `unsettled_orders()` / `reclaim_stale()`，但 `src/` 里零调用——`jobs.py:_run` 的 `for order in range(job.first, job.last + 1)` 从不看 run 记录，中途崩了再点连写就从第 1 章整章重写。三处收口：①`_run` 循环前置 `RunLog(...).reclaim_stale()` + `committed_orders()`，已 committed 的章直接跳过（`BatchJob.skipped` 单独计数，`written` 只算本轮真写的，界面上「跳过 3 章、写了 2 章」不会再显示成「写了 5 章」）；②被杀留下的 `in_progress` 死记录先结算成 failed 再重跑那一章——否则它永远既不重跑也不完成，台账一直显示「这一章在跑」；③同一个 `run_id` 再发一次也不会重写已提交的正文，用户手改过的稿子不会被覆盖。

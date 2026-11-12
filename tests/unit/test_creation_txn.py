@@ -477,6 +477,39 @@ class _ScriptedWriter(_GoodWriter):
         return super().write_chapter(pack)
 
 
+class _SelfReviewWriter(_GoodWriter):
+    """按调用次序给出不同的自评，正文固定。
+
+    专门用来单测「自评进不进判断」：正文一字不改，只有 ``review`` 在变，
+    于是任何行为差异都只能来自自评，不会和文风、闸门混在一起。
+    """
+
+    def __init__(self, reviews: list[tuple[bool, list[str]]], text=None) -> None:
+        super().__init__(text if text is not None else _human_chapter())
+        self._reviews = reviews
+        self.packs: list[list[str]] = []
+
+    def write_chapter(self, pack):  # noqa: ANN001
+        from ndecon.creation.models import ChapterSelfReview, ChapterWriting
+
+        self.packs.append(list(pack.repair_feedback))
+        index = min(len(self.packs) - 1, len(self._reviews) - 1)
+        followed, deviations = self._reviews[index]
+        self.calls += 1
+        return ChapterWriting(
+            content=self._body(pack.chapter_order),
+            review=ChapterSelfReview(
+                hook_strength=3,
+                info_density=3,
+                outline_followed=followed,
+                deviations=list(deviations),
+                notes="",
+                model_id=self.model_id,
+                prompt_version=self.prompt_version,
+            ),
+        )
+
+
 def test_style_advisory_triggers_one_rewrite(tmp_path, monkeypatch) -> None:
     """笔法越界 >1 条时带证据重写一次；重写成人类腔后收下更干净的那版。
 
@@ -604,3 +637,123 @@ def test_unsettled_orders_reported(tmp_path) -> None:
     run.write(ChapterRun(run_id="run-dead", project_id=project.meta.id, order=1))
     assert run.unsettled_orders() == {1}
     assert run.committed_orders() == set()
+
+
+def test_self_review_outline_miss_triggers_one_rewrite(tmp_path, monkeypatch) -> None:
+    """自评说「没按细纲推进」时重写一次，且把偏差点原样喂回 prompt。
+
+    为什么只认 ``outline_followed`` 而不认 1-5 分：那两个分是模型给自己打的
+    主观分，没有人类标定分布（真实工作区实测 Fake 恒 3/3、真模型恒 4/4，
+    一个从不变化的数字不构成判据）。``outline_followed`` 是对一件人能一眼
+    对照细纲复核的事的自认，还附带 ``deviations`` 说明偏在哪。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _SelfReviewWriter(
+        [
+            (False, ["本章核心事件变成了谈判，细纲要求的是失火"]),
+            (True, []),
+        ]
+    )
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.status == "committed"
+    assert outcome.attempts == 2, "自评报偏离细纲要重写一次"
+    # 第二版 prompt 必须带着具体偏差点，否则模型只能靠猜。
+    assert any("细纲" in note for note in writer.packs[1])
+    assert any("失火" in note for note in writer.packs[1])
+
+
+def test_self_review_rewrite_is_capped_at_one(tmp_path, monkeypatch) -> None:
+    """自评一直说偏离也只重写一次：这是自述，不值得无限烧预算。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _SelfReviewWriter([(False, ["还是没写细纲那件事"])])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.status == "committed"
+    assert outcome.attempts == 2
+    assert writer.calls == 2
+
+
+def test_self_review_never_loses_a_gate_passing_chapter(tmp_path, monkeypatch) -> None:
+    """重写把章节写坏时退回上一版：自评重写绝不用「更贴细纲」换「不合格」。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    good = _human_chapter()
+    writer = _SelfReviewWriter([(False, ["偏离"])], text=good)
+    # 第一版好稿；第二版被写坏（只剩 200 字，闸门会判 repair）。
+    original = writer.write_chapter
+
+    def flaky(pack, _inner=original):  # noqa: ANN001
+        written = _inner(pack)
+        if writer.calls >= 2:
+            written = written.model_copy(update={"content": "太短了。"})
+        return written
+
+    monkeypatch.setattr(writer, "write_chapter", flaky)
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.status == "committed", "第一版过硬门，不该因为重写变差就丢章"
+    assert store.read_manuscript(project.meta.id, 1) == good
+
+
+def test_self_review_lands_in_run_record(tmp_path, monkeypatch) -> None:
+    """自评必须抄进 run 记录：project.json 只留提交的那一版，
+    「模型说偏离、重写也没救」这种事故证据只可能留在 run 记录里。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _SelfReviewWriter([(False, ["偏差点甲", "偏差点乙"])])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    run_id = new_run_id()
+    outcome = txn.run_chapter(store, project, 1, provider="fake", run_id=run_id, max_repairs=1)
+    assert outcome.status == "committed"
+    record = RunLog(store.projects_dir / project.meta.id, run_id).read(1)
+    assert record is not None
+    assert record.review_outline_followed is False
+    assert record.review_deviations == ["偏差点甲", "偏差点乙"]
+    assert record.review_hook_strength == 3
+    assert any("自评" in note for note in record.advisories)
+
+
+def test_self_review_absent_is_not_an_accusation(tmp_path, monkeypatch) -> None:
+    """没有自评（老记录/人工编辑）不触发重写：没有证据不等于有罪。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _ScriptedWriter([_human_chapter()])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.attempts == 1
+    assert not any("自评" in note for note in outcome.advisories)
+
+
+def test_subjective_scores_never_trigger_rewrite(tmp_path, monkeypatch) -> None:
+    """打磨过的 1-5 分不触发重写 —— 没有人类标定分布就不当判据。
+
+    这条测试是 ① 的教训写成的断言：给分定阈值等于重造一个永远不触发的
+    假指标。分数只进记录，不进分支。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _SelfReviewWriter([(True, [])])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    # 把分数压到最低，其余一切正常。
+    original = writer.write_chapter
+
+    def low_scores(pack, _inner=original):  # noqa: ANN001
+        written = _inner(pack)
+        review = written.review.model_copy(update={"hook_strength": 1, "info_density": 1})
+        return written.model_copy(update={"review": review})
+
+    monkeypatch.setattr(writer, "write_chapter", low_scores)
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.attempts == 1, "自评分数再低也不该触发重写"
+    assert not any("自评" in note for note in outcome.advisories)

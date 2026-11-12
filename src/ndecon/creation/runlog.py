@@ -69,6 +69,14 @@ class ChapterRun(BaseModel):
     # 「这章被退回了，因为…」，一个是「这章入库了，但你应该知道…」。混在一起
     # 会让用户以为所有提示都是失败。
     advisories: list[str] = Field(default_factory=list, description="不阻断入库的提示")
+    # 模型对本章的结构化自评（#16 的 ChapterSelfReview）。这里再抄一份的理由：
+    # 自评原本只活在 project.json 的 manuscript 记录里，而「模型自认偏离细纲、
+    # 重写一次仍然没救」这种事故恰恰出现在**没有提交**的那一版上 —— 那一版不进
+    # project.json，自评就随着被丢弃的正文一起消失了。run 记录是唯一能留住它的地方。
+    review_hook_strength: int = Field(default=0, ge=0, le=5, description="自评钩子强度（0=无自评）")
+    review_info_density: int = Field(default=0, ge=0, le=5, description="自评信息密度（0=无自评）")
+    review_outline_followed: bool = Field(default=True, description="自评是否贴合细纲")
+    review_deviations: list[str] = Field(default_factory=list, description="自评列出的偏差点")
     # 当前阶段：writing/gate/summary/commit/done。**给界面看的活进度**。
     # 只有它能让用户分清「模型在慢慢写」和「卡死了」——ch*.json 的终态要等
     # 整章跑完才写，中途那几个字段永远是初值。
