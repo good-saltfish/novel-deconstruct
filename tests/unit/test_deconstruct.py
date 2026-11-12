@@ -13,6 +13,7 @@ from ndecon.deconstruct.models import MAX_QUOTE_CHARS, PLACEHOLDER
 from ndecon.deconstruct.pipeline import (
     RULE_MODEL_ID,
     build_rule_deconstruction,
+    build_structure,
     measure_chapter,
 )
 from ndecon.deconstruct.renderers import render_author_md, render_kb_md
@@ -31,6 +32,25 @@ SAMPLE = (
     "他一口气跑到营业厅，柜台后面的姑娘抬头看了他一眼。\n"
     "“您要退保？”\n"
     "他愣住。难道这件事从头到尾都是冲着他来的？\n"
+)
+
+# 开篇平淡、章尾挂问句：用来验证 closing_hook_signal 与 opening_hook_signal 分家。
+# 正文必须明显长于两个 200 字窗口之和，否则章尾那句会同时落进开篇窗口。
+_CLOSING_HOOK_TEXT = (
+    "第1章 收尾\n"
+    "他走了一整天，路上什么也没有发生，天黑了才回到住处，洗了脸就躺下。"
+    "他翻来覆去想着白天那些细碎的对话，一句一句地在心里重放，直到眼皮发沉。"
+    "窗外有人推着车过去，轮子碾过石板发出很轻的响声，很快就远了。"
+    "他起身把窗户关好，回来又把被角掖了两遍，还是睡不着。"
+    "隔壁的灯亮了一会儿，然后灭了。楼道里有脚步声上来，又下去了。"
+    "他数着自己的呼吸，数到两百多的时候终于有点迷糊。"
+    "天快亮的时候，楼下早点摊的蒸汽慢慢升起来，把整条街都泡在一层白气里。"
+    "他下楼买了一碗豆浆，坐在塑料凳上慢慢地喝，看街上的人越来越多。"
+    "摊主问他今天怎么起这么早，他说睡不着，摊主就笑了笑没再问。"
+    "他喝完把碗放回去，起身往巷子深处走，脚步很慢，像是并不急着去哪里。"
+    "巷子尽头那扇门关着，门缝底下透出一点光，一闪一闪的。"
+    "他站在那里看了很久，直到光灭了，才抬手去推。"
+    "可是门后那个人是谁？\n"
 )
 
 
@@ -215,3 +235,185 @@ def test_triangles_per_chapter_is_bounded():
     ChapterDeconstruction(order=1, title="第1章", triangles=[dict(triangle) for _ in range(7)])
     with pytest.raises(ValueError):
         ChapterDeconstruction(order=1, title="第1章", triangles=[dict(triangle) for _ in range(8)])
+
+
+# --------------------------------------------------------------------------
+# 句长分布（L1）：平均句长回答不了"靠长句压气还是靠短句抽打"
+# --------------------------------------------------------------------------
+
+
+def test_sentence_length_distribution_separates_short_and_long():
+    """短句连打与长句铺陈必须落在分布的两端，而不是同一个平均值上。"""
+    choppy = "第1章 打点\n他跑。她追。狗叫。灯灭。门开。"
+    flowing = (
+        "第1章 铺陈\n他沿着那条被雨水泡得发亮的长街一直往前走，"
+        "心里反复想着营业厅柜台上那张被翻过来的保单背面究竟印了谁的名字，"
+        "直到路灯一盏一盏地在他身后熄灭。"
+    )
+    short_metrics, _, _ = measure_chapter(1, "打点", choppy)
+    long_metrics, _, _ = measure_chapter(1, "铺陈", flowing)
+
+    assert short_metrics.median_sentence_chars < long_metrics.median_sentence_chars
+    assert short_metrics.short_sentence_ratio > long_metrics.short_sentence_ratio
+    assert long_metrics.long_sentence_ratio > short_metrics.long_sentence_ratio
+    # 中位数与最短/最长必须自洽，否则渲染出来的分布是假的
+    assert short_metrics.min_sentence_chars <= short_metrics.median_sentence_chars
+    assert short_metrics.median_sentence_chars <= short_metrics.max_sentence_chars
+    assert short_metrics.min_sentence_chars > 0
+
+
+def test_book_structure_aggregates_sentence_length_by_sentence_count():
+    """全书句长分布要按句数计权：短章不能和主线章等权，否则中位数不是这本书的。"""
+    from ndecon.deconstruct.models import ChapterMetrics
+
+    def _metrics(order: int, sentences: int, median: float, short: float, long: float):
+        return ChapterMetrics(
+            chapter_id=f"bk:CH{order:04d}",
+            order=order,
+            char_count=sentences * 30,
+            sentence_count=sentences,
+            avg_sentence_chars=30.0,
+            dialogue_sentence_ratio=0.0,
+            paragraph_count=1,
+            exclaim_ratio=0.0,
+            question_ratio=0.0,
+            no_punct_sentence_ratio=0.0,
+            content_hash="h",
+            median_sentence_chars=median,
+            short_sentence_ratio=short,
+            long_sentence_ratio=long,
+        )
+
+    # 一个 2 句的过场章 + 一个 200 句的主线章：中位数必须落在主线章的 30.0
+    per_chapter = [
+        (_metrics(1, 2, 8.0, 1.0, 0.0), []),
+        (_metrics(2, 200, 30.0, 0.1, 0.4), []),
+    ]
+    structure = build_structure(per_chapter)
+
+    assert structure.median_sentence_chars == 30.0
+    assert structure.short_sentence_ratio == pytest.approx((1.0 * 2 + 0.1 * 200) / 202)
+    assert structure.long_sentence_ratio == pytest.approx((0.0 * 2 + 0.4 * 200) / 202)
+
+
+def test_book_structure_exposes_closing_hook_chapters():
+    """章尾有悬念信号的章号要单独列出来，不能和开篇信号合成一个字段。"""
+    book = build_rule_deconstruction(_CLOSING_HOOK_TEXT, "章尾钩样本")
+    structure = book.structure
+
+    assert structure.closing_hook_openings, "章尾问句必须被量到"
+    assert structure.hook_openings == [], "这个样本开篇没有悬念信号"
+
+
+def test_structure_chapter_lists_have_no_duplicates():
+    """源文重号时，章号列表不许把同一章写两遍。
+
+    真实语料里重复章号很常见（实测《夜无疆》1269 个章节只有 850 个不同章号，
+    切分器会告警但保留），不去重的话报告里"哪些章有悬念信号"会同一章号连写两遍。
+    """
+    repeated = "第1章 甲\n他跑。她追。\n第1章 甲\n他跑。她追。\n第1章 甲\n他跑。她追。\n"
+    book = build_rule_deconstruction(repeated, "重号样本")
+    structure = book.structure
+
+    assert len(book.chapters) == 3, "切分器保留重号，测量层也照量"
+    assert len(structure.quiet_chapters) == len(set(structure.quiet_chapters))
+    assert len(structure.hook_openings) == len(set(structure.hook_openings))
+    assert len(structure.closing_hook_openings) == len(set(structure.closing_hook_openings))
+
+
+def test_metrics_keep_closing_hook_separate_from_opening():
+    """章尾钩与开篇钩是两个判断：只看开篇会把"开局抓人但结尾平"的书夸成好节奏。"""
+    opens_strong = "第1章 开局\n难道他真的已经死了？后面全是流水账，一句接一句，平铺直叙到收尾。"
+    closes_strong = "第1章 收尾\n" + "他走了一天，什么也没有发生。" * 20 + "可是门后那个人是谁？"
+    a, _, _ = measure_chapter(1, "开局", opens_strong)
+    b, _, _ = measure_chapter(1, "收尾", closes_strong)
+
+    assert a.opening_hook_signal is True
+    assert b.opening_hook_signal is False
+    assert b.closing_hook_signal is True
+
+
+# --------------------------------------------------------------------------
+# 钩子台账（L3）：拆来的书"悬念一般吊几章"
+# --------------------------------------------------------------------------
+
+
+def _book_with_hooks(hooks: dict[int, str], cores: dict[int, str]) -> object:
+    """造一本规则层产物并手填语义层字段（钩子台账只读这两处）。"""
+    from ndecon.deconstruct.models import ChapterDeconstruction
+
+    book = build_rule_deconstruction(SAMPLE, "样本")
+    chapters = [
+        ChapterDeconstruction(order=order, title=f"第{order}章")
+        for order in sorted(set(hooks) | set(cores))
+    ]
+    for chapter in chapters:
+        chapter.end_hook = hooks.get(chapter.order, "")
+        chapter.core_event = cores.get(chapter.order, "")
+    book.chapters = chapters
+    return book
+
+
+def test_hook_ledger_records_span_and_open_count():
+    """埋钩 → 隔几章回收 → 中位数/最长/未回收条数都要能算出来。"""
+    from ndecon.deconstruct.pipeline import build_hook_ledger
+
+    book = _book_with_hooks(
+        hooks={1: "登记簿上被划掉的名字", 3: "柜台上那张保单背面的受益人"},
+        cores={
+            2: "他回到营业厅核对登记簿上被划掉的名字",
+            5: "柜台上那张保单背面的受益人原来是他自己",
+        },
+    )
+    build_hook_ledger(book)
+    structure = book.structure
+
+    assert len(structure.hook_ledger) == 2
+    first, second = structure.hook_ledger
+    assert (first.opened_order, first.resolved_order, first.span) == (1, 2, 1)
+    assert (second.opened_order, second.resolved_order, second.span) == (3, 5, 2)
+    assert structure.hook_recovery_median == 1.5
+    assert structure.hook_recovery_longest == 2
+    assert structure.hook_open_count == 0
+
+
+def test_hook_ledger_marks_unresolved_and_ignores_own_hook():
+    """未回收要如实计数；且一条钩子不许被它自己那一章"回收"。"""
+    from ndecon.deconstruct.pipeline import build_hook_ledger
+
+    book = _book_with_hooks(
+        hooks={1: "门后那个一直在等的人"},
+        cores={1: "门后那个一直在等的人", 2: "无关的一章"},
+    )
+    build_hook_ledger(book)
+    entry = book.structure.hook_ledger[0]
+
+    assert entry.resolved_order is None
+    assert entry.span is None
+    assert entry.is_open is True
+    assert book.structure.hook_open_count == 1
+    assert book.structure.hook_recovery_median is None
+
+
+def test_rule_layer_has_no_hook_ledger():
+    """规则层量不出 end_hook，台账就必须是空的 —— 没跑模型就说"没钩子"是撒谎。"""
+    book = build_rule_deconstruction(SAMPLE, "样本")
+    assert book.structure.hook_ledger == []
+    assert book.structure.hook_open_count == 0
+    assert book.structure.hook_recovery_median is None
+
+
+def test_kb_version_lists_hook_spans_without_hook_text():
+    """KB 版可以给章号与间隔，不能给出钩子写了什么。"""
+    from ndecon.deconstruct.pipeline import build_hook_ledger
+    from ndecon.deconstruct.renderers import render_kb_md
+
+    book = _book_with_hooks(
+        hooks={1: "登记簿上被划掉的名字"}, cores={2: "他去核对登记簿上被划掉的名字"}
+    )
+    build_hook_ledger(book)
+    kb = render_kb_md(book)
+
+    assert "钩子的回收节奏" in kb
+    assert "| 1 | 2 | 1 |" in kb
+    assert "登记簿上被划掉的名字" not in kb

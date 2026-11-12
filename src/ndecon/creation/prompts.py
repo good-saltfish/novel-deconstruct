@@ -39,7 +39,45 @@ def learning_brief(reference_stats: list[dict]) -> str:
             f"- 《{stat.get('title', '参考书')}》（{stat.get('chapters', 0)} 章）："
             f"高频主题 {top_themes}；爽点平均章距 {avg_gap if avg_gap is not None else '—'}"
         )
+        structure = stat.get("structure") or {}
+        facts = _structure_facts(structure)
+        if facts:
+            lines.append(f"  - 节奏实测：{facts}")
+        hooks = _hook_facts(structure)
+        if hooks:
+            lines.append(f"  - 钩子节拍：{hooks}")
     return "\n".join(lines)
+
+
+def _structure_facts(structure: dict) -> str:
+    """从拆书结构里取可直接对标的手感数字（全是数值，不含任何情节文本）。"""
+    parts: list[str] = []
+    if structure.get("avg_sentence_chars") is not None:
+        parts.append(f"平均句长 {float(structure['avg_sentence_chars']):.1f} 字")
+    if structure.get("avg_dialogue_ratio") is not None:
+        parts.append(f"对话句占比 {float(structure['avg_dialogue_ratio']) * 100:.0f}%")
+    if structure.get("per_thousand_conflicts") is not None:
+        parts.append(f"每千字 {float(structure['per_thousand_conflicts']):.1f} 处冲突点")
+    if structure.get("median_sentence_chars") is not None:
+        parts.append(f"句长中位 {float(structure['median_sentence_chars']):.1f} 字")
+    if structure.get("short_sentence_ratio") is not None:
+        parts.append(f"短句占比 {float(structure['short_sentence_ratio']) * 100:.0f}%")
+    return "；".join(parts)
+
+
+def _hook_facts(structure: dict) -> str:
+    """钩子的回收节奏：这本书的悬念一般吊几章。"""
+    parts: list[str] = []
+    median = structure.get("hook_recovery_median")
+    if median is not None:
+        parts.append(f"已回收钩子的间隔中位数 {float(median):.1f} 章")
+    longest = structure.get("hook_recovery_longest")
+    if longest is not None:
+        parts.append(f"最长吊钩 {int(longest)} 章")
+    open_count = structure.get("hook_open_count")
+    if open_count:
+        parts.append(f"读到末章仍开放 {int(open_count)} 条")
+    return "；".join(parts)
 
 
 def _outline_spec(chapter_count: int = 10) -> dict:

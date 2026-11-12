@@ -40,6 +40,51 @@ def test_reference_stats_influence_selling_points() -> None:
     assert any("复仇" in point for point in draft.positioning.selling_points)
 
 
+def test_learning_brief_carries_structure_numbers_only() -> None:
+    """结构剖面进简报时只带数字：句子有多长、钩子吊几章，不带任何情节转述。"""
+    from ndecon.creation.prompts import learning_brief
+
+    brief = learning_brief(
+        [
+            {
+                "title": "诡舍",
+                "chapters": 120,
+                "themes": {"打脸": 30},
+                "pacing": {"average_gap": 3.0},
+                "structure": {
+                    "avg_sentence_chars": 21.5,
+                    "avg_dialogue_ratio": 0.32,
+                    "per_thousand_conflicts": 2.4,
+                    "median_sentence_chars": 18.0,
+                    "short_sentence_ratio": 0.41,
+                    "hook_recovery_median": 2.5,
+                    "hook_recovery_longest": 6,
+                    "hook_open_count": 3,
+                },
+                # 下面的字段不该被简报读走，哪怕上游真传了整份拆书产物：
+                "chapters_detail": [{"core_event": "他在登记簿上看见自己的名字被划掉"}],
+            }
+        ]
+    )
+    assert "平均句长 21.5 字" in brief
+    assert "对话句占比 32%" in brief
+    assert "句长中位 18.0 字" in brief
+    assert "间隔中位数 2.5 章" in brief
+    assert "最长吊钩 6 章" in brief
+    assert "仍开放 3 条" in brief
+    assert "登记簿上看见自己的名字被划掉" not in brief
+
+
+def test_learning_brief_without_structure_stays_short() -> None:
+    """没跑过拆书的参考项目只报主题与爽点章距，不硬编一行"节奏实测"占位。"""
+    from ndecon.creation.prompts import learning_brief
+
+    brief = learning_brief([{"title": "旧书", "chapters": 10, "themes": {}, "pacing": {}}])
+    assert "《旧书》" in brief
+    assert "节奏实测" not in brief
+    assert "钩子节拍" not in brief
+
+
 def test_draft_from_dict_rejects_bad_chapter_orders() -> None:
     """章节不是从 1 起连续递增时，转换层必须报错而不是写入半成品。"""
     from ndecon.creation.providers import _draft_from_dict

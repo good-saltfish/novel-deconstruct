@@ -88,6 +88,83 @@ def test_outline_message_passes_confirmed_settings_as_hard_constraint():
 
 
 # --------------------------------------------------------------------------
+# 参考拆书的结构剖面进 prompt（L2）：只进数字，不进情节
+# --------------------------------------------------------------------------
+
+REFERENCE_STATS = [
+    {
+        "title": "诡舍",
+        "chapters": 120,
+        "themes": {"打脸": 30},
+        "pacing": {"average_gap": 3.0},
+        "structure": {
+            "avg_sentence_chars": 21.5,
+            "avg_dialogue_ratio": 0.32,
+            "per_thousand_conflicts": 2.4,
+            "median_sentence_chars": 18.0,
+            "short_sentence_ratio": 0.41,
+            "hook_recovery_median": 2.5,
+            "hook_recovery_longest": 6,
+            "hook_open_count": 3,
+        },
+    }
+]
+
+
+def test_setting_message_can_carry_reference_structure():
+    """设定/细纲两套 prompt 都要能拿到参考拆书的节奏实测，否则"对标"无从谈起。"""
+    setting_message = plans.setting_user_message(
+        "书名", "都市", "一句话", SNIPPET, reference_stats=REFERENCE_STATS
+    )
+    outline_message = plans.outline_user_message(
+        "书名", "都市", "一句话", knowledge_snippets=SNIPPET, reference_stats=REFERENCE_STATS
+    )
+    for message in (setting_message, outline_message):
+        assert "参考拆书的节奏实测" in message
+        assert "《诡舍》" in message
+        assert "句长中位 18.0 字" in message
+        assert "钩子" in message and "2.5 章" in message
+        assert "最长吊钩 6 章" in message
+        assert "不许照抄" in message
+
+
+def test_reference_block_stays_silent_without_structure():
+    """参考书没跑过拆书时不编数字，也不留一个空标题段落。"""
+    without_structure = [{"title": "旧书", "chapters": 10, "themes": {}, "pacing": {}}]
+    message = plans.setting_user_message(
+        "书名", "都市", "一句话", SNIPPET, reference_stats=without_structure
+    )
+    assert "参考拆书的节奏实测" not in message
+    assert "旧书" not in message
+
+
+def test_reference_block_never_carries_narrative_fields():
+    """结构化拆书里只许取 structure；chapters/panorama 的转述文本一个都不许进 prompt。
+
+    这条是版权闸门的第二道：`_reference_structure_block` 只读 structure 里的
+    float/int，即使上游把整份 BookDeconstruction 传进来，情节也不会漏出来。
+    """
+    with_narrative = [
+        {
+            "title": "诡舍",
+            "chapters": 120,
+            "structure": {"avg_sentence_chars": 21.5},
+            # 下面这些字段真实存在，必须被忽略：
+            "chapters_detail": [{"core_event": "主角在登记簿上看见自己的名字被划掉"}],
+            "panorama": {"main_characters": ["陈默——保险调查员"]},
+            "hook_text": "门后那个人一直在等",
+        }
+    ]
+    message = plans.setting_user_message(
+        "书名", "都市", "一句话", SNIPPET, reference_stats=with_narrative
+    )
+    assert "21.5 字" in message
+    assert "登记簿上看见自己的名字被划掉" not in message
+    assert "陈默" not in message
+    assert "门后那个人一直在等" not in message
+
+
+# --------------------------------------------------------------------------
 # 候选校验：坏产物必须拒绝，而不是降格接收
 # --------------------------------------------------------------------------
 

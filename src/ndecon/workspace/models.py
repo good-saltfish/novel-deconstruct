@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from ndecon.creation.models import CreationDraft, ManuscriptRecord, SettingEntry
+from ndecon.deconstruct.models import BookDeconstruction
 from ndecon.domain.models import Aggregation
 
 ProjectKind = Literal["reference", "creation"]
@@ -48,6 +49,10 @@ class ReferenceProject(BaseModel):
     chapter_count: int = Field(ge=0)
     total_plot_points: int = Field(ge=0)
     aggregation: Aggregation | None = None
+    # 结构化拆书产物（规则层，若跑过语义层则含 panorama）。
+    # 与 aggregation 并存不是冗余：aggregation 是"章节摘要聚合"（旧分析管道），
+    # 这里存的是逐章测量 + 全书结构剖面 + 钩子台账，创作侧要的正是后者。
+    deconstruction: BookDeconstruction | None = None
 
 
 class CreationProject(BaseModel):

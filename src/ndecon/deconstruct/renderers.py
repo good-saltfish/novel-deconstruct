@@ -19,6 +19,22 @@ def _fmt(value: float, digits: int = 2) -> str:
     return f"{value:.{digits}f}"
 
 
+# 章号列表在报告里最多展开这么多章，其余只报数量。
+# 一部长篇能列出 800 多个章号（实测《夜无疆》1269 章里有 438 章被判空窗），
+# 全量展开会把报告和知识库页面撑成一行不可读的长链，而真正有用的是"比例 + 前几例"。
+ORDER_SAMPLE_LIMIT = 12
+
+
+def _render_orders(orders: list[int]) -> str:
+    """章号列表只报「数量 + 前若干章」，不把 800 个章号排成一行。"""
+    if not orders:
+        return "无"
+    head = "、".join(str(order) for order in orders[:ORDER_SAMPLE_LIMIT])
+    if len(orders) <= ORDER_SAMPLE_LIMIT:
+        return head
+    return f"共 {len(orders)} 章（前 {ORDER_SAMPLE_LIMIT} 章：{head}…）"
+
+
 def _render_structure_table(structure: BookStructure | None) -> list[str]:
     """渲染"客观数值"块（KB 版本中唯一允许保留的事实性内容）。"""
     if structure is None:
@@ -29,13 +45,27 @@ def _render_structure_table(structure: BookStructure | None) -> list[str]:
         f"| 总字数（去空白） | {structure.total_chars} |",
         f"| 章均字数 | {_fmt(structure.avg_chapter_chars, 0)} |",
         f"| 平均句长 | {_fmt(structure.avg_sentence_chars)} |",
+        f"| 句长中位数 | {_fmt(structure.median_sentence_chars, 1)} |",
+        f"| 短句占比（≤12 字） | {_fmt(structure.short_sentence_ratio * 100)}% |",
+        f"| 长句占比（>45 字） | {_fmt(structure.long_sentence_ratio * 100)}% |",
         f"| 对话句占比 | {_fmt(structure.avg_dialogue_ratio * 100)}% |",
         f"| 疑似冲突点密度 | 每千字 {_fmt(structure.per_thousand_conflicts)} 处 |",
     ]
     if structure.quiet_chapters:
-        lines.append(f"| 节奏空窗候选章 | {'、'.join(str(n) for n in structure.quiet_chapters)} |")
+        lines.append(f"| 节奏空窗候选章 | {_render_orders(structure.quiet_chapters)} |")
     if structure.hook_openings:
-        lines.append(f"| 开篇有悬念信号 | {'、'.join(str(n) for n in structure.hook_openings)} |")
+        lines.append(f"| 开篇有悬念信号 | {_render_orders(structure.hook_openings)} |")
+    if structure.closing_hook_openings:
+        lines.append(f"| 章尾有悬念信号 | {_render_orders(structure.closing_hook_openings)} |")
+    # 钩子回收节奏：这一组是"别人写完的书"的实际排布，最容易被直接迁移成自己的节拍
+    if structure.hook_ledger:
+        median = structure.hook_recovery_median
+        lines.append(
+            f"| 钩子回收间隔中位数 | {_fmt(median, 1) if median is not None else '—'} 章 |"
+        )
+        longest = structure.hook_recovery_longest
+        lines.append(f"| 最长吊钩间隔 | {longest if longest is not None else '—'} 章 |")
+        lines.append(f"| 读到最后一章仍未回收 | {structure.hook_open_count} 条 |")
     return lines
 
 
@@ -44,11 +74,16 @@ def _render_metrics_block(metrics: ChapterMetrics) -> list[str]:
     return [
         f"- 字数 {metrics.char_count} ｜ 句数 {metrics.sentence_count} ｜ "
         f"平均句长 {_fmt(metrics.avg_sentence_chars)} ｜ 段落 {metrics.paragraph_count}",
+        f"- 句长分布：中位 {_fmt(metrics.median_sentence_chars, 1)} ｜ "
+        f"最短 {metrics.min_sentence_chars} ｜ 最长 {metrics.max_sentence_chars} ｜ "
+        f"短句占比 {_fmt(metrics.short_sentence_ratio * 100)}% ｜ "
+        f"长句占比 {_fmt(metrics.long_sentence_ratio * 100)}%",
         f"- 对话句占比 {_fmt(metrics.dialogue_sentence_ratio * 100)}% ｜ "
         f"感叹号句占比 {_fmt(metrics.exclaim_ratio * 100)}% ｜ "
         f"问号句占比 {_fmt(metrics.question_ratio * 100)}% ｜ "
         f"无句末标点句占比 {_fmt(metrics.no_punct_sentence_ratio * 100)}%",
-        f"- 开篇悬念信号：{'有' if metrics.opening_hook_signal else '无'}",
+        f"- 开篇悬念信号：{'有' if metrics.opening_hook_signal else '无'} ｜ "
+        f"章尾悬念信号：{'有' if metrics.closing_hook_signal else '无'}",
     ]
 
 
@@ -117,6 +152,21 @@ def render_kb_md(book: BookDeconstruction) -> str:
         lines += ["## 冲突密度的章级分布", "", "| 章 | 每千字疑似冲突点 |", "|---:|---:|"]
         for order, density in sorted(book.structure.conflict_density.items(), key=lambda kv: int(kv[0])):
             lines.append(f"| {order} | {_fmt(density)} |")
+        lines.append("")
+
+    if book.structure and book.structure.hook_ledger:
+        lines += [
+            "## 钩子的回收节奏",
+            "",
+            "> 只列埋钩/回收的章号与间隔，不列钩子写了什么。",
+            "",
+            "| 埋钩章 | 回收章 | 间隔（章） |",
+            "|---:|---:|---:|",
+        ]
+        for entry in sorted(book.structure.hook_ledger, key=lambda item: item.opened_order):
+            resolved = str(entry.resolved_order) if entry.resolved_order is not None else "未回收"
+            span = str(entry.span) if entry.span is not None else "—"
+            lines.append(f"| {entry.opened_order} | {resolved} | {span} |")
         lines.append("")
 
     lines += ["## 迁移到自己稿子上的做法", "", "> 下面每条只讲做法，不含这本书写了什么。", ""]

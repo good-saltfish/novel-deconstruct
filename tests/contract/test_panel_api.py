@@ -95,6 +95,83 @@ def test_invalid_part_rejected(server) -> None:
     assert "不合法" in body["error"]
 
 
+def test_import_runs_rule_deconstruction_and_exposes_structure(server) -> None:
+    """导入参考书时顺手跑一次规则层拆书：毫秒级、零 token，但创作侧从此有节奏数字可对标。"""
+    status, ref = api_request(
+        server, "POST", "/api/projects/import",
+        {"name": "合成参考书", "file_path": str(FIXTURE)},
+    )
+    assert status == 201
+    book = ref["deconstruction"]
+    assert book is not None, "导入必须同时产出规则层拆书产物"
+    assert book["model_id"] == "rule:deconstruct"
+    assert book["chapters"], "至少量到一章"
+    structure = book["structure"]
+    assert structure["total_chars"] > 0
+    assert structure["avg_sentence_chars"] > 0
+    # 规则层不出语义字段 —— 没跑模型就不许编钩子台账
+    assert structure["hook_ledger"] == []
+    assert book["chapters"][0]["core_event"] == ""
+
+
+def test_reference_structure_reaches_creation_plans_without_narrative(server, tmp_path) -> None:
+    """参考拆书的结构数字要进设定/细纲 prompt，但情节文本一个都不许跟进去。"""
+    _, ref = api_request(
+        server, "POST", "/api/projects/import",
+        {"name": "合成参考书", "file_path": str(FIXTURE)},
+    )
+    ref_id = ref["meta"]["id"]
+    _, cre = api_request(
+        server, "POST", "/api/projects/create",
+        {"title": "挂参考书的新书", "genre": "末世", "premise": "规则求生", "reference_ids": [ref_id]},
+    )
+    cre_id = cre["meta"]["id"]
+
+    # 面板内部的 stats 必须带上 structure（不带则 prompt 里没数字可对标）
+    from ndecon.panel.server import _reference_stats
+
+    stats = _reference_stats(server.workspace_store, [ref_id])
+    assert len(stats) == 1
+    assert "structure" in stats[0]
+    assert stats[0]["structure"]["avg_sentence_chars"] > 0
+    # 结构块只挑数值字段，转述文本不在此列
+    assert not any(key in stats[0]["structure"] for key in ("chapters", "panorama", "hook_text"))
+
+    for path in ("settings", "outline"):
+        status, payload = api_request(
+            server, "POST", f"/api/projects/{cre_id}/plan/{path}", {"provider": "fake"}
+        )
+        assert status == 200, payload
+
+
+def test_reference_stats_tolerates_reference_without_aggregation(server) -> None:
+    """只有拆书产物、没有旧聚合数据的参考项目也必须能被算作有效参考。"""
+    from ndecon.deconstruct.pipeline import build_rule_deconstruction
+    from ndecon.panel.server import _reference_stats
+    from ndecon.workspace.models import ProjectMeta, ReferenceProject
+
+    text = FIXTURE.read_text(encoding="utf-8")
+    store = server.workspace_store
+    project_id = store.allocate_project_id("reference", "只有拆书的参考")
+    store.save_reference(
+        ReferenceProject(
+            meta=ProjectMeta(
+                id=project_id, kind="reference", title="只有拆书的参考", created_at=store.now_iso()
+            ),
+            source_path=str(FIXTURE),
+            chapter_count=0,
+            total_plot_points=0,
+            aggregation=None,
+            deconstruction=build_rule_deconstruction(text, "只有拆书的参考"),
+        )
+    )
+
+    stats = _reference_stats(store, [project_id])
+    assert len(stats) == 1
+    assert "themes" not in stats[0], "没有 aggregation 就不该凭空造主题分布"
+    assert stats[0]["structure"]["avg_sentence_chars"] > 0
+
+
 def test_import_missing_file_400(server) -> None:
     """导入不存在的文件返回 400。"""
     status, body = api_request(

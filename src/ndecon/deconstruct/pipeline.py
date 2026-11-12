@@ -24,6 +24,7 @@ from ndecon.deconstruct.models import (
     ChapterDeconstruction,
     ChapterMetrics,
     ConflictAnchor,
+    HookLedgerEntry,
 )
 from ndecon.deconstruct.renderers import render_author_md, render_kb_md
 
@@ -39,6 +40,14 @@ DEFAULT_SEMANTIC_CHAPTERS = 40
 _WS = re.compile(r"\s")
 _SENTENCE_TAIL = "。！？!?…"
 _SUSPENSE_NAMES = {"悬念提问", "质询逼问"}
+
+# 句长分布的两个分界（去空白字数）：短句推进 vs 长句铺陈
+SHORT_SENTENCE_CHARS = 12
+LONG_SENTENCE_CHARS = 45
+# 章尾钩检测窗口（字符）：只看正文最后这么长的一段，与开篇窗口对称
+CLOSING_WINDOW_CHARS = 200
+# 钩子回收的重合阈值：与 retrieval.foreshadow 同一口径，避免两套"算回收"的定义
+HOOK_RESOLVE_THRESHOLD = 0.6
 # 落盘文件名：只保留文件系统安全字符，中文书名也能用
 _UNSAFE_FILENAME = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff._-]+")
 
@@ -86,9 +95,12 @@ def measure_chapter(
     unpunct = 0
     anchors: list[dict] = []
     overflow = False
+    lengths: list[int] = []
 
     for start, end, text in sentences:
-        sentence_chars += len(_WS.sub("", text))
+        length = len(_WS.sub("", text))
+        lengths.append(length)
+        sentence_chars += length
         if has_dialogue(text):
             dialogue += 1
         if "！" in text or "!" in text:
@@ -116,6 +128,24 @@ def measure_chapter(
 
     count = len(sentences)
     opening = body[:OPENING_WINDOW_CHARS]
+    closing = body[-CLOSING_WINDOW_CHARS:] if len(body) > CLOSING_WINDOW_CHARS else body
+    # 中位数用标准定义：偶数个取中间两个的平均。句长分布比平均值能说明"这本书的呼吸感"，
+    # 一两个超长句（排比、意识流）就能把平均值拉走，中位数拉不走。
+    lengths.sort()
+    if lengths:
+        half = len(lengths) // 2
+        median = (
+            float(lengths[half])
+            if len(lengths) % 2
+            else (lengths[half - 1] + lengths[half]) / 2.0
+        )
+        shortest, longest = lengths[0], lengths[-1]
+        short_ratio = sum(1 for value in lengths if value <= SHORT_SENTENCE_CHARS) / count
+        long_ratio = sum(1 for value in lengths if value > LONG_SENTENCE_CHARS) / count
+    else:
+        median = 0.0
+        shortest = longest = 0
+        short_ratio = long_ratio = 0.0
     metrics = ChapterMetrics(
         chapter_id=chapter_id(order),
         order=order,
@@ -132,6 +162,16 @@ def measure_chapter(
             for rule in CLASH_LEXICON
             if rule.pattern.search(opening)
         ),
+        closing_hook_signal=any(
+            rule.name in _SUSPENSE_NAMES
+            for rule in CLASH_LEXICON
+            if rule.pattern.search(closing)
+        ),
+        median_sentence_chars=median,
+        min_sentence_chars=shortest,
+        max_sentence_chars=longest,
+        short_sentence_ratio=short_ratio,
+        long_sentence_ratio=long_ratio,
         content_hash=hash_value,
     )
     warnings = (
@@ -166,18 +206,134 @@ def build_structure(
             str(m.order): (len(anchors) / m.char_count * 1000 if m.char_count else 0.0)
             for m, anchors in per_chapter
         },
-        quiet_chapters=[
-            m.order
-            for m, anchors in per_chapter
-            if m.char_count and (len(anchors) / m.char_count * 1000) < per_thousand / 2
-        ],
-        hook_openings=[m.order for m, _ in per_chapter if m.opening_hook_signal],
+        quiet_chapters=list(
+            dict.fromkeys(
+                m.order
+                for m, anchors in per_chapter
+                if m.char_count and (len(anchors) / m.char_count * 1000) < per_thousand / 2
+            )
+        ),
+        hook_openings=_flag_orders(per_chapter, "opening_hook_signal"),
+        median_sentence_chars=_weighted_median(per_chapter),
+        short_sentence_ratio=_weighted_ratio(per_chapter, "short_sentence_ratio"),
+        long_sentence_ratio=_weighted_ratio(per_chapter, "long_sentence_ratio"),
+        closing_hook_openings=_flag_orders(per_chapter, "closing_hook_signal"),
     )
+
+
+def _flag_orders(per_chapter: list[tuple[ChapterMetrics, list[dict]]], field: str) -> list[int]:
+    """把逐章的布尔标记收成章号列表，并且去重。
+
+    源文里可能有重复章号（切分器会告警但保留，实测《夜无疆》1269 个章节里有 412 个重号），
+    不去重的话渲染出来的"哪些章有悬念信号"会同一章号连写两遍，读者以为是两章。
+    用 dict.fromkeys 保序去重，不排序——章号顺序本身就是原文顺序的证据。
+    """
+    return list(dict.fromkeys(m.order for m, _ in per_chapter if getattr(m, field)))
+
+
+def _weighted_median(per_chapter: list[tuple[ChapterMetrics, list[dict]]]) -> float:
+    """按句数计权的全书句长中位数。
+
+    为什么不是"各章中位数再取平均"：短章和长章的句数差几十倍，简单平均会让
+    一个 200 字的过场章和 4000 字的主线章等权，算出来的中位数不是这本书的中位数。
+    """
+    weighted = [
+        (m.median_sentence_chars, m.sentence_count) for m, _ in per_chapter if m.sentence_count
+    ]
+    if not weighted:
+        return 0.0
+    total = sum(count for _, count in weighted)
+    if not total:
+        return 0.0
+    ordered = sorted(weighted, key=lambda pair: pair[0])
+    threshold = total / 2
+    running = 0
+    for value, count in ordered:
+        running += count
+        if running >= threshold:
+            return value
+    return ordered[-1][0]
+
+
+def _weighted_ratio(per_chapter: list[tuple[ChapterMetrics, list[dict]]], field: str) -> float:
+    """按句数计权的全书占比（短句占比 / 长句占比）。"""
+    total = sum(m.sentence_count for m, _ in per_chapter)
+    if not total:
+        return 0.0
+    weighted = sum(getattr(m, field) * m.sentence_count for m, _ in per_chapter)
+    return weighted / total
 
 
 def _to_anchors(raws: list[dict]) -> list[ConflictAnchor]:
     """把规则层产出的 anchor dict 校验成模型对象（顺手挡掉 end<=start 的脏坐标）。"""
     return [ConflictAnchor(**raw) for raw in raws]
+
+
+def _candidate_text(chapter: ChapterDeconstruction) -> str:
+    """某一章"可能回收了别人的钩子"的证据面：核心事件 + 点评。
+
+    刻意**不含这一章自己的章尾钩**：否则一条钩子会被它自己"回收"，
+    连带把后面所有章都算成已回收（`retrieval.foreshadow` 踩过同一个坑）。
+    """
+    return " ".join(part for part in [chapter.core_event, *chapter.highlights] if part)
+
+
+def build_hook_ledger(book: BookDeconstruction) -> None:
+    """算书的钩子台账：谁在哪一章埋了钩子、隔几章回收、还有几条吊到最后一章。
+
+    只在有语义层时才有意义——规则层量不出 `end_hook`，那里台账就是空的，
+    而这正是我们想要的：**没跑模型就说"这本书没有钩子"是撒谎**，
+    渲染器会按 `hook_ledger == []` 走"语义层未接入"的分支。
+    """
+    from ndecon.retrieval.tokenize import tokenize
+
+    by_order = {chapter.order: chapter for chapter in book.chapters}
+    ordered = sorted(by_order)
+    entries: list[HookLedgerEntry] = []
+    for order in ordered:
+        hook = (by_order[order].end_hook or "").strip()
+        if not hook:
+            continue
+        hook_tokens = set(tokenize(hook))
+        if not hook_tokens:
+            continue
+        resolved: int | None = None
+        ratio: float | None = None
+        for later in ordered:
+            if later <= order:
+                continue
+            tokens = set(tokenize(_candidate_text(by_order[later])))
+            if not tokens:
+                continue
+            score = len(hook_tokens & tokens) / len(hook_tokens)
+            if score >= HOOK_RESOLVE_THRESHOLD:
+                resolved, ratio = later, score
+                break
+        entries.append(
+            HookLedgerEntry(
+                opened_order=order,
+                resolved_order=resolved,
+                span=(resolved - order) if resolved is not None else None,
+                match_ratio=ratio,
+                description=hook,
+            )
+        )
+
+    spans = sorted(entry.span for entry in entries if entry.span is not None)
+    if spans:
+        half = len(spans) // 2
+        median = float(spans[half]) if len(spans) % 2 else (spans[half - 1] + spans[half]) / 2.0
+        longest: int | None = spans[-1]
+    else:
+        median = None
+        longest = None
+
+    structure = book.structure or BookStructure(total_chars=book.total_chars)
+    structure.hook_ledger = entries
+    structure.hook_recovery_median = median
+    structure.hook_recovery_longest = longest
+    structure.hook_open_count = sum(1 for entry in entries if entry.is_open)
+    book.structure = structure
 
 
 def build_rule_deconstruction(
@@ -300,6 +456,7 @@ def attach_semantics(
         book.warnings.append(f"语义层跳过 {failed} 章（详见上列告警），这些章只有客观测量")
     if book.panorama is None:
         book.warnings.append(f"全景骨架未产出，相关字段留 {PLACEHOLDER}")
+    build_hook_ledger(book)
     book.model_id = getattr(deconstructor, "model_id", book.model_id)
     from ndecon.deconstruct.prompts import PROMPT_VERSION
 

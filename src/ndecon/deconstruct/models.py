@@ -91,6 +91,28 @@ class ChapterMetrics(BaseModel):
         description="切句后不以句末标点收尾的比例；偏高通常意味着切分噪声或大量断句残片",
     )
     opening_hook_signal: bool = Field(default=False, description="开篇 200 字内出现悬念信号")
+    closing_hook_signal: bool = Field(
+        default=False, description="章尾 200 字内出现悬念信号（章尾是否停在线上）"
+    )
+    # 句长分布：只报中位数与最短/最长，不报"平均"以外的派生指标 ——
+    # 这三条是为了回答"这本书是靠长句压气还是靠短句抽打"，平均句长回答不了。
+    median_sentence_chars: float = Field(
+        default=0.0, ge=0.0, description="句子去空白字数的中位数（抗个别超长句拉偏）"
+    )
+    min_sentence_chars: int = Field(default=0, ge=0, description="最短句字数（去空白）")
+    max_sentence_chars: int = Field(default=0, ge=0, description="最长句字数（去空白）")
+    short_sentence_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="≤SHORT_SENTENCE_CHARS 字的句子占比；高意味着靠短句推进（打点节奏）",
+    )
+    long_sentence_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=">LONG_SENTENCE_CHARS 字的句子占比；高意味着靠长句铺陈（沉浸节奏）",
+    )
     content_hash: str = Field(min_length=1)
 
 
@@ -156,6 +178,32 @@ class PanoramaDeconstruction(BaseModel):
     )
 
 
+class HookLedgerEntry(BaseModel):
+    """一条章末钩子的生命周期：哪一章埋的、隔了几章被收、没收的挂在哪。
+
+    与 `retrieval.foreshadow.ForeshadowEntry` 的区别：那个管**自己这本书**的细纲，
+    本类管**拆来的那本书**里作者是怎么排钩子的——它要回答的是"这本书的钩子平均
+    隔几章回收"，而不是"我下一章该照顾哪条伏笔"。所以它只存统计与坐标，
+    不存原句（`description` 由调用方给出时必须是压缩转述，见 renderers 的纪律）。
+    """
+
+    opened_order: int = Field(ge=1, description="埋钩章号")
+    resolved_order: int | None = Field(default=None, description="回收章号；整本没收为 None")
+    span: int | None = Field(default=None, ge=1, description="隔了几章才回收；未回收为 None")
+    match_ratio: float | None = Field(default=None, description="回收判定的 token 重合比例")
+    description: str = Field(default="", description="钩子的压缩转述，≤32 字；不含原句")
+
+    @field_validator("description")
+    @classmethod
+    def _short(cls, value: str) -> str:
+        return _clip(value, _NOTE_LIMIT)
+
+    @property
+    def is_open(self) -> bool:
+        """整本读完仍未回收。"""
+        return self.resolved_order is None
+
+
 class BookStructure(BaseModel):
     """全书测量层：**零语义**，规则就能算出来，也是最该沉淀进知识库的部分。"""
 
@@ -171,6 +219,32 @@ class BookStructure(BaseModel):
         default_factory=list, description="冲突密度低于全书均值一半的章（节奏空窗候选）"
     )
     hook_openings: list[int] = Field(default_factory=list, description="开篇有悬念信号的章号")
+    # 句长分布的全书口径：平均句长分不出"全短句"和"长短交替"，
+    # 按句计权的中位数与两端占比才能回答"这本书靠长句压气还是靠短句抽打"。
+    median_sentence_chars: float = Field(
+        default=0.0, ge=0.0, description="全书句子字数中位数（按句计权，复用逐章中位数）"
+    )
+    short_sentence_ratio: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="短句（<=12 字）在全书句子里的占比"
+    )
+    long_sentence_ratio: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="长句（>45 字）在全书句子里的占比"
+    )
+    closing_hook_openings: list[int] = Field(
+        default_factory=list, description="章尾有悬念信号的章号（章尾是否停在线上）"
+    )
+    # 钩子回收节奏：拆书侧最有迁移价值的一条——它回答"这本书的悬念一般吊几章"。
+    # 与 creation 侧的伏笔台账不同，这里统计的是**别人已经写完的书**的实际排布。
+    hook_recovery_median: float | None = Field(
+        default=None, description="已回收钩子的回收间隔中位数（章）；没有已回收钩子为 None"
+    )
+    hook_recovery_longest: int | None = Field(
+        default=None, ge=1, description="最长的一次吊钩间隔（章）；没有已回收钩子为 None"
+    )
+    hook_open_count: int = Field(default=0, ge=0, description="读到最后一章仍未回收的钩子数")
+    hook_ledger: list[HookLedgerEntry] = Field(
+        default_factory=list, description="逐条钩子的埋/收记录；不含原句"
+    )
 
 
 class BookDeconstruction(BaseModel):

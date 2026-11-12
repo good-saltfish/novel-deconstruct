@@ -136,6 +136,37 @@ def _project_brief(title: str, genre: str, premise: str) -> str:
     return f"书名：《{title}》\n题材：{genre or '（未指定，由你据设定判断）'}\n一句话设定：{premise}"
 
 
+def _reference_structure_block(
+    reference_stats: list[dict] | None, heading: str
+) -> str:
+    """把参考拆书的结构剖面渲染成"只学排布"的一段。
+
+    这里出现的是**数值与章号**，不是情节：`_structure_facts` / `_hook_facts`
+    只读 structure 里的 float/int，拆书产物里的转述文本（core_event / end_hook /
+    main_characters）一个都进不来。版权边界靠这个选择本身成立。
+    """
+    from ndecon.creation.prompts import _hook_facts, _structure_facts
+
+    rows: list[str] = []
+    for stat in reference_stats or []:
+        structure = stat.get("structure") or {}
+        facts = _structure_facts(structure)
+        hooks = _hook_facts(structure)
+        if not facts and not hooks:
+            continue
+        detail = "；".join(part for part in (facts, hooks) if part)
+        rows.append(f"- 《{stat.get('title', '参考书')}》：{detail}")
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            heading,
+            "> 只对节奏与钩子节拍，不许照抄任何具体情节、人名、能力名与世界观名词。",
+            *rows,
+        ]
+    )
+
+
 def setting_user_message(
     title: str,
     genre: str,
@@ -143,11 +174,14 @@ def setting_user_message(
     knowledge_snippets: list[dict] | None = None,
     *,
     entry_budget: int = 8,
+    reference_stats: list[dict] | None = None,
 ) -> str:
     """组装设定 prompt 的用户消息：收敛式——先边界、再代价、最后人。"""
     knowledge = _kb_block(knowledge_snippets or [], "【设定写法的方法论参考】")
+    reference = _reference_structure_block(reference_stats, "【参考拆书的节奏实测】")
     sections = [
         _project_brief(title, genre, premise),
+        reference,
         knowledge,
         (
             f"请产出 {entry_budget} 条以内的设定条目，覆盖至少 3 个不同类型"
@@ -172,6 +206,7 @@ def outline_user_message(
     *,
     golden_finger: dict | None = None,
     chapter_count: int = 10,
+    reference_stats: list[dict] | None = None,
 ) -> str:
     """组装细纲 prompt 的用户消息：铺开式——沿时间轴排张力。
 
@@ -208,5 +243,11 @@ def outline_user_message(
         "并说明从方法论参考中借鉴了哪一条（没有就写'未使用'）。\n\n"
         + json.dumps(_outline_spec(chapter_count), ensure_ascii=False)
     )
-    sections = [_project_brief(title, genre, premise), constraints, knowledge, task]
+    sections = [
+        _project_brief(title, genre, premise),
+        constraints,
+        _reference_structure_block(reference_stats, "【参考拆书的节奏实测】"),
+        knowledge,
+        task,
+    ]
     return "\n\n".join(part for part in sections if part)

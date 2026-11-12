@@ -55,6 +55,7 @@ from ndecon.creation.providers import FakeCreator, OpenAICompatCreator
 from ndecon.creation.runlog import RunLog
 from ndecon.creation.summarize import backfill_summaries, content_hash, summarize_chapter
 from ndecon.creation.txn import MAX_REPAIR_ATTEMPTS, run_chapter
+from ndecon.deconstruct.pipeline import build_rule_deconstruction
 from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload
@@ -183,17 +184,38 @@ def _reference_stats(store: WorkspaceStore, reference_ids: list[str]) -> list[di
             project = store.get(project_id)
         except KeyError:
             continue
-        if not isinstance(project, ReferenceProject) or project.aggregation is None:
+        if not isinstance(project, ReferenceProject):
             continue
-        agg = project.aggregation
-        stats.append(
-            {
-                "title": project.meta.title,
-                "chapters": project.chapter_count,
-                "themes": agg.theme_distribution,
-                "pacing": agg.pacing.model_dump(),
+        if project.aggregation is None and project.deconstruction is None:
+            continue
+        entry: dict = {
+            "title": project.meta.title,
+            "chapters": project.chapter_count,
+        }
+        if project.aggregation is not None:
+            agg = project.aggregation
+            entry["themes"] = agg.theme_distribution
+            entry["pacing"] = agg.pacing.model_dump()
+        # 结构化拆书的结构剖面：节奏实测数字与钩子回收节拍。
+        # 只送 structure（纯数字），不送 chapters/panorama 里的任何转述文本——
+        # 那条纪律由"这里只挑 structure"这个写法本身保证，不是靠自觉。
+        deconstruction = project.deconstruction
+        if deconstruction is not None and deconstruction.structure is not None:
+            structure = deconstruction.structure.model_dump()
+            entry["structure"] = {
+                key: structure.get(key)
+                for key in (
+                    "avg_sentence_chars",
+                    "avg_dialogue_ratio",
+                    "per_thousand_conflicts",
+                    "median_sentence_chars",
+                    "short_sentence_ratio",
+                    "hook_recovery_median",
+                    "hook_recovery_longest",
+                    "hook_open_count",
+                )
             }
-        )
+        stats.append(entry)
     return stats
 
 
@@ -617,6 +639,15 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(400, f"拆书失败：{exc}")
                 return
             project_id = store.allocate_project_id("reference", name or _display_stem(source) or "未命名")
+            # 顺手跑规则层拆书（纯 regex + 计数，毫秒级、零 token）：
+            # 不跑这一步，创作侧拿到的参考书就只有"主题分布 + 爽点章距"两个数字，
+            # 节奏与钩子节拍这类真正能迁移的结构信息全部丢失。
+            # 失败不阻断导入——旧分析管道的结果仍然是有用的，缺结构只是信息更少。
+            deconstruction = None
+            with contextlib.suppress(ValueError):
+                deconstruction = build_rule_deconstruction(
+                    text, bundle.book_title, source_path=str(source_path.resolve())
+                )
             project = ReferenceProject(
                 meta=ProjectMeta(
                     id=project_id, kind="reference", title=bundle.book_title,
@@ -626,6 +657,7 @@ un_server 传 server.jobs），不能在这里新建：
                 chapter_count=len(bundle.entries),
                 total_plot_points=sum(len(s.plot_points) for s in bundle.summaries),
                 aggregation=bundle.aggregation,
+                deconstruction=deconstruction,
             )
             store.save_reference(project)
             self._send_json(201, project.model_dump())
@@ -921,7 +953,11 @@ un_server 传 server.jobs），不能在这里新建：
             ]
             try:
                 plan = planner.plan_settings(
-                    project.meta.title, project.genre, project.premise, snippets
+                    project.meta.title,
+                    project.genre,
+                    project.premise,
+                    snippets,
+                    reference_stats=_reference_stats(store, project.reference_ids),
                 )
             except PlanError as exc:
                 self._error(502, str(exc))
@@ -964,6 +1000,7 @@ un_server 传 server.jobs），不能在这里新建：
                     confirmed,
                     snippets,
                     golden_finger=finger,
+                    reference_stats=_reference_stats(store, project.reference_ids),
                 )
             except PlanError as exc:
                 self._error(502, str(exc))

@@ -39,9 +39,19 @@ class SettingPlanner(Protocol):
     prompt_version: str
 
     def plan_settings(
-        self, title: str, genre: str, premise: str, knowledge_snippets: list[dict] | None = None
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        knowledge_snippets: list[dict] | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> SettingPlan:
-        """产出设定候选；knowledge_snippets 是知识库命中的方法论片段。"""
+        """产出设定候选；knowledge_snippets 是知识库命中的方法论片段。
+
+        reference_stats 是参考拆书的结构剖面（只有数字），用来让模型对齐
+        目标节奏；离线模板不消费它，只保持同签名。
+        """
         ...
 
 
@@ -59,6 +69,8 @@ class OutlinePlanner(Protocol):
         confirmed_settings: list[dict] | None = None,
         knowledge_snippets: list[dict] | None = None,
         golden_finger: dict | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> OutlinePlan:
         """产出前 10 章节拍候选；已确认设定作为硬约束传入。"""
         ...
@@ -151,10 +163,16 @@ class FakeSettingPlanner:
     prompt_version = plans.SETTING_PROMPT_VERSION
 
     def plan_settings(
-        self, title: str, genre: str, premise: str, knowledge_snippets: list[dict] | None = None
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        knowledge_snippets: list[dict] | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> SettingPlan:
         """给出覆盖 4 个类型的设定骨架，每条都带'违反会怎样'。"""
-        del title, premise  # 离线模板不消费这些，仅保持与真实生成器同签名
+        del title, premise, reference_stats  # 离线模板不消费这些，仅保持与真实生成器同签名
         genre_name = genre or "都市异能"
         return _setting_plan_from_dict(
             {
@@ -234,9 +252,11 @@ class FakeOutlinePlanner:
         confirmed_settings: list[dict] | None = None,
         knowledge_snippets: list[dict] | None = None,
         golden_finger: dict | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> OutlinePlan:
         """产出第 1-3 章的节拍示范；后面的章留给作者按同一节奏补。"""
-        del title, premise
+        del title, premise, reference_stats
         genre_name = genre or "都市异能"
         constraint = (confirmed_settings or [{}])[0].get("name", "") if confirmed_settings else ""
         finger_name = (golden_finger or {}).get("name", "气息回放")
@@ -358,13 +378,25 @@ class OpenAICompatSettingPlanner:
         self.model_id = f"openai-compat:{getattr(provider, 'model', 'unknown')}"
 
     def plan_settings(
-        self, title: str, genre: str, premise: str, knowledge_snippets: list[dict] | None = None
+        self,
+        title: str,
+        genre: str,
+        premise: str,
+        knowledge_snippets: list[dict] | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> SettingPlan:
         messages = [
             {"role": "system", "content": plans.SETTING_SYSTEM_MESSAGE},
             {
                 "role": "user",
-                "content": plans.setting_user_message(title, genre, premise, knowledge_snippets),
+                "content": plans.setting_user_message(
+                    title,
+                    genre,
+                    premise,
+                    knowledge_snippets,
+                    reference_stats=reference_stats,
+                ),
             },
         ]
         data = self._chat(messages)
@@ -400,6 +432,8 @@ class OpenAICompatOutlinePlanner:
         confirmed_settings: list[dict] | None = None,
         knowledge_snippets: list[dict] | None = None,
         golden_finger: dict | None = None,
+        *,
+        reference_stats: list[dict] | None = None,
     ) -> OutlinePlan:
         messages = [
             {"role": "system", "content": plans.OUTLINE_SYSTEM_MESSAGE},
@@ -412,6 +446,7 @@ class OpenAICompatOutlinePlanner:
                     confirmed_settings,
                     knowledge_snippets,
                     golden_finger=golden_finger,
+                    reference_stats=reference_stats,
                 ),
             },
         ]

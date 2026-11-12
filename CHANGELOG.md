@@ -5,7 +5,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **拆书产物真正接进创作（原来只喂了两行数字）**：`creation/` 对 `deconstruct/` 的依赖此前只有 `plans.py` 借了一个 `MAX_QUOTE_CHARS` 常量，拆出来的世界观/金手指/人物/情节点/细纲在创作侧**零消费**——真实项目 `reference_ids` 全为空，等于拆书拆完就丢。三层接上：**L1 规则层直连**：导入参考书时顺手跑一次 `build_rule_deconstruction`（纯 regex、毫秒级、零 token，失败不阻断导入），产物存进 `ReferenceProject.deconstruction`；`_reference_stats` 把它压成一份**只有数字**的 `structure`（句子多长、短句占比、每千字冲突点、钩子吊几章），经 `creation.prompts.learning_brief` 进骨架 prompt。**L2 语义层进设定/细纲**：`setting_user_message` / `outline_user_message` 新增 `reference_stats`，`_plan_settings` / `_plan_outline` 把同一份数字传给 planner，模型据此对标节奏与钩子节拍。**L3 章尾钩回收统计**：拆书侧新增 `build_hook_ledger`——对每章 `end_hook` 用 bigram 重合率（阈值 0.6，与 `retrieval.foreshadow` 同口径）扫后续章找回收章，产出钩子台账（埋钩章/回收章/间隔）与 `hook_recovery_median` / `hook_recovery_longest` / `hook_open_count`；判回收时**刻意不看该章自己的钩子**，否则钩子会自我回收。
+- **版权闸门第二道：结构化产物也只出数字**：`_reference_stats` 只挑 `structure` 的 8 个数值键，`chapters` / `panorama` / `hook_text` 等转述文本结构性不可达；`test_reference_block_never_carries_narrative_fields` 用三个带情节的字段做反向断言。KB 版 markdown 新增「钩子的回收节奏」段，只列章号与间隔，不列钩子写了什么。
+- **句子层面能回答「靠长句压气还是靠短句抽打」**：`ChapterMetrics` 新增 `median_sentence_chars` / `min_sentence_chars` / `max_sentence_chars` / `short_sentence_ratio`（≤12 字）/ `long_sentence_ratio`（>45 字）与 `closing_hook_signal`（章尾 200 字内的悬念信号，与开篇窗口对称）。平均句长会把"全短句"和"长短交替"算成同一本书，中位数与两端占比才能分开。全书口径按**句数计权**（`_weighted_median` / `_weighted_ratio`）而不是各章取平均——否则一个 200 字的过场章和 4000 字的主线章等权，算出来的中位数不是这本书的中位数。实测三本真实长篇（《九鼎记》74 章 /《从水猴子开始成神》77 章 /《夜无疆》1269 章）：句长中位 26–33 字、短句占比 13–23%、章尾钩 9–120 章，规则层耗时 190ms–4.9s。
+
 ### Fixed
+
+- **报告里章号列表去重并截断**：真实语料重复章号很常见（实测《夜无疆》1269 个章节只有 850 个不同章号，切分器告警但保留），`quiet_chapters` / `hook_openings` / `closing_hook_openings` 会把同一章号连写两遍。改用 `dict.fromkeys` 保序去重；渲染侧 `_render_orders` 只报「共 N 章（前 12 章：…）」，不再把 438 个章号排成一行撑爆知识库页面。
 
 - **连写断点续跑（原来只能从头重来）**：`RunLog` 早就有 `committed_orders()` / `unsettled_orders()` / `reclaim_stale()`，但 `src/` 里零调用——`jobs.py:_run` 的 `for order in range(job.first, job.last + 1)` 从不看 run 记录，中途崩了再点连写就从第 1 章整章重写。三处收口：①`_run` 循环前置 `RunLog(...).reclaim_stale()` + `committed_orders()`，已 committed 的章直接跳过（`BatchJob.skipped` 单独计数，`written` 只算本轮真写的，界面上「跳过 3 章、写了 2 章」不会再显示成「写了 5 章」）；②被杀留下的 `in_progress` 死记录先结算成 failed 再重跑那一章——否则它永远既不重跑也不完成，台账一直显示「这一章在跑」；③同一个 `run_id` 再发一次也不会重写已提交的正文，用户手改过的稿子不会被覆盖。
 - **陈旧游标导致「接着写」变成「从头重写」**：老项目 `project.json` 里 `cursor` 停在 0，而 `manuscripts/` 下已经躺着 ch001-ch009；连写默认区间是 `cursor + 1` 起（前端也算这一份），于是用户点「接着往下写」实际从第 1 章开始，九章被整章覆盖。游标陈旧的三个来源都不写游标——逐章 `POST /chapters/<n>/generate`、版本还原 `restore_version`、早期没有 `cursor` 字段的文件——所以修在**读**这一处：`WorkspaceStore.get()` 调 `_heal_cursor()`，把游标补到 `manuscripts/chNNN.md` 的最大章号并落盘。写入走 `update_creation`（锁内重读再改）而不是 `save_creation`，避免重犯 B-2 的「过期快照冲掉用户编辑」。顺带修好 `summarize.missing_summary_orders`——它同样按 `cursor` 扫盘补摘要，游标陈旧会漏章。
