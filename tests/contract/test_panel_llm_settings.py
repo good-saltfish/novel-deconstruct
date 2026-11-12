@@ -1,4 +1,4 @@
-﻿"""面板 LLM 供应商设置与 AI 生成契约（#23）。全程不触网：真实调用以 stub provider 替代。"""
+"""面板 LLM 供应商设置与 AI 生成契约（#23）。全程不触网：真实调用以 stub provider 替代。"""
 
 import pytest
 

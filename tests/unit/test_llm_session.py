@@ -1,4 +1,4 @@
-﻿"""LLM 供应商目录与会话的单元测试（#23）：校验规则与 key 不回传。"""
+"""LLM 供应商目录与会话的单元测试（#23）：校验规则与 key 不回传。"""
 
 from ndecon.llm.catalog import catalog_payload, get_preset
 from ndecon.llm.session import LLMSession, validate_config_payload
