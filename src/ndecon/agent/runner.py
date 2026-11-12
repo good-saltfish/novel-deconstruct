@@ -26,6 +26,7 @@ from ndecon.agent.models import (
     TraceStep,
 )
 from ndecon.agent.tools import READ_ONLY_TOOLS, ToolContext, execute_tool, tool_catalog_text
+from ndecon.domain.models import ChapterSummary
 from ndecon.workspace.models import CreationProject
 
 MAX_TURNS = 12
@@ -164,9 +165,14 @@ def run_planner(
     task: TaskType,
     workspace: str | Path,
     chapter_order: int | None = None,
+    summaries: list[ChapterSummary] | None = None,
     max_turns: int = MAX_TURNS,
 ) -> AgentRunResult:
-    """执行 planner 循环，返回候选、trace 与停止原因（本函数不做任何持久化）。"""
+    """执行 planner 循环，返回候选、trace 与停止原因（本函数不做任何持久化）。
+
+    summaries 是本书已写章节的摘要，调用方从 store 读好后传进来；缺省表示
+    "还没写过任何章"（摘要不在 project.json 上，本函数也不会自己去猜）。
+    """
     if task == "expand_chapter" and chapter_order is None:
         raise ValueError("expand_chapter 任务必须提供 chapter_order")
 
@@ -177,6 +183,7 @@ def run_planner(
         chapter_order=chapter_order,
         workspace=Path(workspace),
         drafts=drafts,
+        summaries=list(summaries or []),
     )
     messages: list[dict] = [
         {"role": "system", "content": PLANNER_SYSTEM},

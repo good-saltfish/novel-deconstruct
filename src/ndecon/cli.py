@@ -590,7 +590,7 @@ def _load_project_summaries(store, project_id: str) -> list:
     摘要不再存在 project.json 里，所以凡是要组装上下文或重建索引的地方，
     都必须显式从这里加载；损坏的单章文件跳过，不拖垮整本。
     """
-    from ndecon.workspace.models import ChapterSummary
+    from ndecon.domain.models import ChapterSummary
 
     items = []
     for payload in store.list_summaries(project_id):

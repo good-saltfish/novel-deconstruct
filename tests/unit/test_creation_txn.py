@@ -244,8 +244,8 @@ def test_run_chapter_commits_and_records(tmp_path, monkeypatch) -> None:
 
     reloaded = store.get(project.meta.id)
     assert reloaded.manuscripts["ch1"].status == "auto-accepted"
-    # 摘要外置到 summaries/chNNN.json，不再塞进 project.json
-    assert reloaded.summaries == {}
+    # 摘要外置到 summaries/chNNN.json，project.json 上已没有 summaries 字段
+    assert not hasattr(reloaded, "summaries")
     summary_payload = store.read_summary(project.meta.id, 1)
     assert summary_payload is not None
     assert summary_payload["order"] == 1
@@ -362,7 +362,7 @@ def test_run_chapter_rolls_back_on_reject(tmp_path, monkeypatch) -> None:
 
     reloaded = store.get(project.meta.id)
     assert "ch1" not in reloaded.manuscripts
-    assert "ch1" not in reloaded.summaries
+    assert store.read_summary(project.meta.id, 1) is None
     assert reloaded.cursor == 0
 
     run = RunLog(store.projects_dir / project.meta.id, outcome.run_id)

@@ -284,10 +284,13 @@ def test_legacy_inline_summaries_are_migrated(tmp_path) -> None:
     store._atomic_write_json(store._path_for("creation-legacy-1"), payload)  # noqa: SLF001
 
     migrated = store.get("creation-legacy-1")
-    assert migrated.summaries == {}
+    # 字段本身已从 CreationProject 上删除：迁移后不该再出现同名字段
+    assert not hasattr(migrated, "summaries")
     assert store.read_summary("creation-legacy-1", 1)["gist"] == "旧布局里的摘要"
-    # 迁移后重读仍是空的，说明只搬一次、不会反复重写
-    assert store.get("creation-legacy-1").summaries == {}
+    # 迁移后旧键要从 project.json 里抹掉，否则每次读项目都会重跑一遍迁移
+    on_disk = json.loads(store._path_for("creation-legacy-1").read_text(encoding="utf-8"))
+    assert "summaries" not in on_disk
+    assert not hasattr(store.get("creation-legacy-1"), "summaries")
 
 
 def test_project_artifact_filename_whitelist(tmp_path) -> None:

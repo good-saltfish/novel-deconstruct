@@ -1,18 +1,23 @@
 """跨章 AI 味判据：单章不阻断，连续多章持续偏高才阻断。
 
-为什么不能做单章硬门（2026-11-04 实测，99 本真实网文 3956 章 vs 10 章真模型正文）：
+为什么不能做单章硬门（2026-11-12 实测重标定，dev 20 本 899 章 / hold 19 本 854 章，
+单章 CJK 2000-5000 字，段落口径 = ``style.paragraphs_of``）：
 
-    规则                    人类p50  人类p95  人类max   AI p50  AI max
-    em_dash                    0        5        30      10      17
-    period_per_paragraph       2        4       329      4       5
-    simile_density             3       10        39     7.5      10
-    scene_rotation             0        2         6      0       2
+    规则                      人类p50  人类p95  人类max
+    em_dash                      0        9       75
+    period_per_paragraph(*)    0.000    0.143  0.465   <- 已改为「超长段占比」
+    simile_density               4       12       37
+    scene_rotation(*)            0        3        5   <- 只计数，不判罚
 
-单章上全部重叠。人类小说里 em_dash=30、段落句号=329 的章节真实存在（作者个人
+    (*) fp-v2 改了这两条的口径：``period_per_paragraph`` 的 value 不再是「段内
+    句号最大值」而是「超长段占比」；``scene_rotation`` 方向反了（人类中位 0），
+    已降级为 info。
+
+单章上全部重叠。人类小说里 em_dash=75、段落句号占比 0.465 的章节真实存在（作者个人
 风格），任何「单章超阈值即拒绝」的硬门都会误杀人类写的好书。这正是本项目
 红线说的「判据写不出来，那一步就不能自动化」。
 
-但中位数差异是稳定的（em_dash 0 vs 10、simile 3 vs 7.5）。差异不在单章，
+但中位数差异是稳定的（em_dash 0 vs 10、simile 4 vs 7.5）。差异不在单章，
 而在**一本书整体的倾向**。所以可成立的判据是：
 
     连续 K 章的章级实测值中位数，持续高于人类 p95 才算「整本在漂」。
@@ -22,19 +27,22 @@
 - 整本都靠破折号造停顿（AI 的典型习惯）→ 中位数持续抬高 → 阻断。
 
 参数取 K=5、参考线取人类 p95（见 _REFERENCE_P95）。参考线是实测值不是拍的，
-换语料要重跑 `_scratch/compare_fingerprint_ai_vs_human.py` 重新标定。
+换语料要重跑标定脚本（``_scratch/fp_calibrate.py``）重新取分位。
 """
 
 from __future__ import annotations
 
 from statistics import median
 
-# 参考线 = 人类真实网文的 p95（2026-11-04 实测，99 本 / 3956 章）。
+# 参考线 = 人类真实网文的 p95（2026-11-12 重标定，dev 899 章 / hold 854 章）。
 # 超过这条线的章在人类作品里只有 5%，所以「连续多章中位数都过线」不是风格问题。
+# 注意：这里的 key 必须与 fingerprint.py 的 rule id 一致，且 value 的**单位**
+# 也要一致——fp-v2 把 period_per_paragraph 换成了「超长段占比」，所以参考线
+# 从 4.0 改成 0.143（人类 p95 占比），否则该规则永远不会触发。
 _REFERENCE_P95: dict[str, float] = {
-    "em_dash": 5.0,
-    "period_per_paragraph": 4.0,
-    "simile_density": 10.0,
+    "em_dash": 9.0,
+    "period_per_paragraph": 0.143,
+    "simile_density": 12.0,
 }
 
 # 需要连续多少章的中位数过线才判定「整本在漂」。
@@ -68,8 +76,10 @@ def drift_verdict(rule_values: list[float], rule: str) -> tuple[bool, str]:
     line = reference * DRIFT_MEDIAN_RATIO
     if middle <= line:
         return False, ""
+    # 占比类规则（如 period_per_paragraph）参考线是 0-1 的小数，用整数格式化会显示成 0
+    fmt = (lambda v: f"{v:.3f}") if reference < 1 else (lambda v: f"{v:.1f}")
     return True, (
-        f"最近 {DRIFT_WINDOW} 章「{rule}」中位数 {middle:.1f}，"
-        f"超过人类作品 p95（{reference:.0f}）的 {DRIFT_MEDIAN_RATIO:g} 倍（{line:.1f}）"
+        f"最近 {DRIFT_WINDOW} 章「{rule}」中位数 {fmt(middle)}，"
+        f"超过人类作品 p95（{fmt(reference)}）的 {DRIFT_MEDIAN_RATIO:g} 倍（{fmt(line)}）"
         f"——整本正在朝同一个套路漂"
     )

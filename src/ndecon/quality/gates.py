@@ -472,8 +472,11 @@ def check_chapter(
             1.0 if _containment >= FRESHNESS_CONTAINMENT_REPORT else 0.0
         ),
         "cross_chapter_overlap": round(_worst_overlap, 4),
-        "fingerprint_passed": 1.0 if getattr(report, "passed", False) else 0.0,
     }
+    # 曾经这里还写过一个 "fingerprint_passed": 1.0/0.0 的合取值：它是八条规则的
+    # 再压缩，而每条规则的实测值下面已经逐个记进 soft_scores 了，没有任何消费者读它。
+    # fp-v2 起 ``passed`` 的语义也变了（单条越界不算，累计才判），留一个同名不同义的
+    # 合取列只会误导后来的人，故删除。
     for finding in getattr(report, "findings", []) or []:
         if getattr(finding, "severity", "warn") == "warn":
             # 指纹越界只记分：AI 味阈值本来就按 2000-3500 字校准，硬拦会误杀。

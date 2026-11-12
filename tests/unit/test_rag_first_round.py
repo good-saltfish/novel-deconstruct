@@ -3,9 +3,9 @@
 覆盖：
 - P0③ KB 渲染三合一：render_kb_block 为唯一实现；prompts/plans 委托；400 截断一致；
 - P0② SearchOwnBook 用真实 doc_type="chapter_summary" 过滤 + 注入已写章节摘要；
-- P0④⑤ CreationProject.summaries 落盘可回读；store.load_project_index 真正消费
+- P0④⑤ 章节摘要外置到 summaries/chNNN.json 后可回读；store.load_project_index 真正消费
   reindex 的 index.json（消除死写）；build_project_index 消费 summaries；
-- P0① 面板章节生成写后闭环：生成一章后 project.summaries 真的多了一条结构摘要。
+- P0① 面板章节生成写后闭环：生成一章后盘上真的多了一条结构摘要。
 """
 
 from __future__ import annotations
@@ -138,13 +138,14 @@ def test_search_own_book_excludes_summary_documents(tmp_path: Path) -> None:
     同时索引里确实含有摘要（排除是"过滤"而非"未索引"，P0① 生效）。
     """
     project = _creation_project(tmp_path)
-    project.summaries["ch2"] = _chapter_summary(2, "巡夜第二晚")
+    summaries = [_chapter_summary(2, "巡夜第二晚")]
     ctx = ToolContext(
         project=project,
         task="expand_chapter",
         chapter_order=1,
         workspace=tmp_path,
         drafts=AgentDrafts(),
+        summaries=summaries,
     )
 
     result = SearchOwnBook().run(SearchOwnBook.Params(query="林盏"), ctx)
@@ -152,10 +153,10 @@ def test_search_own_book_excludes_summary_documents(tmp_path: Path) -> None:
     assert "[chapter_summary]" not in result
 
     # 索引确实含有已写章节摘要（证明注入生效，而非被静默丢弃）
-    index = build_project_index(project, list(project.summaries.values()))
+    index = build_project_index(project, summaries)
     assert any(d.doc_type == "chapter_summary" for d in index.documents)
     # 且检索能召回它（与 SearchOwnBook 的"过滤"形成对照）
-    pack = build_context_pack(project, 1, summaries=list(project.summaries.values()))
+    pack = build_context_pack(project, 1, summaries=summaries)
     assert any(d.doc_type == "chapter_summary" for d in pack.retrieved)
 
 
@@ -191,10 +192,12 @@ def test_reindex_writes_index_then_load_project_index_reads_it(tmp_path: Path) -
     """reindex 的 index.json 必须可被 load_project_index 真正消费（消除 t3 死写）。"""
     store = WorkspaceStore(tmp_path)
     project = _creation_project(tmp_path)
-    project.summaries["ch1"] = _chapter_summary(1, "巡夜首晚")
+    summary = _chapter_summary(1, "巡夜首晚")
     store.save_creation(project)
+    store.write_summary(project.meta.id, 1, summary.model_dump())
 
-    index = build_project_index(project, list(project.summaries.values()))
+    summaries = [ChapterSummary(**item) for item in store.list_summaries(project.meta.id)]
+    index = build_project_index(store.get(project.meta.id), summaries)
     store.write_project_artifact(project.meta.id, "index.json", index.to_dict())
 
     # 之前没有读取方 → dead write；现在 load_project_index 必须能读回
@@ -226,7 +229,7 @@ def server(tmp_path):
 
 
 def test_panel_generate_chapter_writes_summary(server, tmp_path) -> None:
-    """#16 扩展：Fake 生成一章后，project.summaries 真的多出一条结构摘要（写后闭环）。"""
+    """#16 扩展：Fake 生成一章后，盘上真的多出一条结构摘要（写后闭环）。"""
     from ndecon.panel.server import api_request
 
     _, cre = api_request(

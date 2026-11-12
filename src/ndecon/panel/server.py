@@ -811,6 +811,9 @@ un_server 传 server.jobs），不能在这里新建：
                 task=task,  # type: ignore[arg-type]
                 workspace=store.root,
                 chapter_order=chapter_order,
+                # 摘要外置在 summaries/chNNN.json，project.json 上不持有；
+                # 不显式传，search_own_book 就检索不到已写章节。
+                summaries=self._load_project_summaries(project_id),
             )
             self._send_json(200, result.model_dump())
 

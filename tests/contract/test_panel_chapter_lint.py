@@ -3,7 +3,7 @@
 import pytest
 
 from ndecon.panel.server import api_request, serve_in_thread
-from ndecon.quality.fingerprint import AI_FINGERPRINT_VERSION
+from ndecon.quality.fingerprint import AI_FINGERPRINT_VERSION, MAX_WARN_VIOLATIONS
 
 
 @pytest.fixture()
@@ -46,8 +46,9 @@ def test_lint_returns_report_without_touching_text(server) -> None:
         assert finding["severity"] in ("warn", "info")
         if finding["severity"] == "info":
             assert finding["passed"] is True
-    assert report["passed"] is all(
-        f["passed"] for f in report["findings"] if f["severity"] == "warn"
+    assert report["passed"] is (
+        sum(1 for f in report["findings"] if f["severity"] == "warn" and not f["passed"])
+        <= MAX_WARN_VIOLATIONS
     )
 
     _, after = api_request(server, "GET", f"/api/projects/{pid}/chapters/1")
@@ -74,7 +75,8 @@ def test_lint_detects_density_over_threshold(server) -> None:
             "这不是一把刀，而是一把被诅咒过的刀——它闪烁着冷冽的光芒，"
             "像是深渊的眼睛一般注视着他，这不是恐惧，是某种更深的、无名的、古老的战栗。",
             "他的手掌的边缘的温度的触感渐渐消失。",
-            "这不是选择，是命运。这不是命运，是选择。这不是结束——是开始。",
+            "这不是选择，是命运。这不是命运，是选择。"
+            "这不是结束——是开始——是终结——是轮回——是宿命——是答案。",
         ]
     )
     status, _ = api_request(

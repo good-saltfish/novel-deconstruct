@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **指纹报告从"人类章节恒不通过"改为可按比例判读（fp-v2）**：旧版八条规则用 `all()` 合取，实测 1500 章人类真实正文只有 **0.1%** 能通过——元凶是 `scene_rotation` 把「场景标记 ≥5」当下限（人类中位 0，单条误杀 99.9%），`period_per_paragraph` 的限值 2 又恰好卡在人类中位数上。三处口径修正：①段落切分改用 `style.paragraphs_of`，与阈值表同一坐标系（旧 `split_paragraphs` 按空行切块，把整章当一段，实测差 17 倍）；②`scene_rotation` 降为 info 只展示不判罚；③`passed` 改为「warn 规则越界 ≤1 条」——单条越界只是风格，累计才是信号。阈值按本机语料重标定（dev 20 本 899 章定线 / hold 19 本 854 章回放）：`not_x_but_y` 2→3、`em_dash` 1→5、`period_per_paragraph` 改超长段占比 ≤15%、`simile_density` 去双重合取后取「整章 ≤10 且密集段占比 ≤5%」。人类章节 `passed=False` 从 99.9% 降到 dev 8.0% / hold 4.7%，与 `style.py` 五条联合误杀率 4.3% 同量级。`AI_FINGERPRINT_VERSION` 升 `fp-v2`（同名不同义），`drift.py` 的参考线同步换单位（`em_dash` 9.0、`period_per_paragraph` 0.143、`simile_density` 12.0），否则该规则永远不会触发。
+- **删掉 `gates.py` 的 `fingerprint_passed` 软分键**：它是八条规则的再压缩，而每条规则的实测值已逐个记进 `soft_scores` 的 `fp_<rule>`，全仓（含面板与 IDE 插件）无任何消费者。合取语义一改，留一个同名不同义的列只会误导。
+
+### Removed
+
+- **`CreationProject.summaries` 死字段**：摘要在 `cb925b6` 就已外置到 `summaries/chNNN.json`，但模型上仍留着这个字段，生成链路从不写它——`agent/tools.py` 据此读它，`SearchOwnBook` 拿到的永远是空列表，等于「已写章节入索引」那次修复从未生效。现在字段删除，`ToolContext.summaries` + `run_planner(summaries=...)` 由调用方显式传入；旧工作区的内联摘要由 `WorkspaceStore.get()` 在反序列化**之前**从裸 dict 取走并搬盘（顺序不能换：pydantic `extra="ignore"` 会先静默吞掉该键）。
+
 ## [0.2.0] - 2026-10-01
 
 ### Fixed

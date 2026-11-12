@@ -67,11 +67,17 @@ def test_ai_flavored_chapter_is_flagged_but_not_rewritten():
 
 
 def test_em_dash_rule_counts_double_dash():
+    # 计数口径不随阈值变：3 处就是 3
     text = "他停住了——因为门外有声音——他屏住呼吸——脚步声近了。"
     report = scan_chapter(text)
     finding = _finding(report, "em_dash")
     assert finding.value == 3
-    assert not finding.passed
+    # fp-v2：阈值 5（人类 p90=4、p95=9，有作者整章 75 个属个人风格），3 处不越界
+    assert finding.passed
+
+    # 超过阈值才越界
+    heavy = "——".join(["他停住了"] * 7)  # 6 处破折号
+    assert not _finding(scan_chapter(heavy), "em_dash").passed
 
 
 def test_de_repeat_rule():

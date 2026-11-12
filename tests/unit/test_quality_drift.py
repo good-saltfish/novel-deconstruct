@@ -46,6 +46,7 @@ def test_drift_verdict_ignores_unknown_rule() -> None:
 def test_check_chapter_exempts_placeholder_banner() -> None:
     """占位正文豁免漂移判据：模板生成器必然饱和，判它 AI 味没有意义。"""
     text = PLACEHOLDER_BANNER + "\n" + "他推开门。走了进去。看见一个人。\n" * 200
-    history = [{"period_per_paragraph": 16.0} for _ in range(DRIFT_WINDOW - 1)]
+    # fp-v2 起 period_per_paragraph 的值是「超长段占比」（0-1），不是句号个数
+    history = [{"period_per_paragraph": 0.9} for _ in range(DRIFT_WINDOW - 1)]
     report = check_chapter(text, previous_fingerprints=history)
     assert not [f for f in report.hard_failures if f.rule.startswith("drift_")]

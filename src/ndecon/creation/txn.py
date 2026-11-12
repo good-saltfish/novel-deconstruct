@@ -32,6 +32,7 @@ from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWrite
 from ndecon.creation.models import ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
+from ndecon.domain.models import ChapterSummary
 from ndecon.quality.fingerprint import scan_chapter
 from ndecon.quality.gates import (
     CHAPTER_TARGET_CHARS_DEFAULT,
@@ -41,7 +42,7 @@ from ndecon.quality.gates import (
 )
 from ndecon.quality.style import StyleReport, inspect_style
 from ndecon.retrieval.context import build_context_pack
-from ndecon.workspace.models import ChapterSummary, CreationProject
+from ndecon.workspace.models import CreationProject
 from ndecon.workspace.store import WorkspaceStore
 
 # 修复重写上限：两次。全自动连跑里"无限重试"是灾难——它会让一本书卡在一章上

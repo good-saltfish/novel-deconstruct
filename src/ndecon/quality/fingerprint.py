@@ -7,6 +7,19 @@
 已在文档中标注"需自验"；本模块因此把每条规则都做成**可配置上限**，
 作者可据自己的语感校准（改常量即可，扫描逻辑不变）。
 
+fp-v2（2026-11-12）把阈值重新标定到本机语料实测分位，并修掉三个会误导人的口径：
+1. **段落口径与 style.py 统一**：旧版 ``split_paragraphs`` 按空行切块，而真实网文
+   txt 多为单换行分段，于是"一整章"被当成一段，``period_per_paragraph`` 的实测值
+   与它自己的阈值表差 17 倍（人类 p95 实测 69，表里写 4）。现在统一用
+   ``style.paragraphs_of``（一行一段、未收尾的行并入下一行），两条判据才同一坐标系。
+2. **``scene_rotation`` 不再判罚**：它的判据是"场景标记 >= 5"，方向与人类实际相反
+   （人类中位 0，即大多数章节一个转场词都没有）。它曾让 ``passed`` 在人类章节上
+   只有 0.1% 为真，是最典型的假指标。现在降为 info，只展示计数。
+3. **``passed`` 从"全部规则都要过"改成"最多允许 1 条越界"**：单章上"像 AI"与
+   "像人"的分布本来就重叠（见下方标定表），任何一条越界都不足以判死；≥2 条同时
+   越界才是有意义的信号。旧口径等于要求一章同时满足 5 条左右的窄阈值，人类作品
+   自然全被判红。
+
 设计纪律：
 1. 纯字符串/正则，确定性——同样输入永远同样输出，不调模型、不联网；
 2. 只数"可疑密度"，不做"是不是 AI"的判定（检测准确率反证见文档 5.4：
@@ -25,42 +38,56 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
-AI_FINGERPRINT_VERSION = "fp-v1"
+from ndecon.quality.style import paragraphs_of
 
-# ---- 关于「这些阈值能不能当硬门」的实测结论（2026-11-04，勿凭直觉改） ----
-# 用 99 本真实网文（3956 章）与 10 章 deepseek-flash 真实正文做过分布对比：
+AI_FINGERPRINT_VERSION = "fp-v2"
+
+# ---- 关于「这些阈值能不能当硬门」的实测结论（勿凭直觉改） ----
+# fp-v1（2026-11-04）用 99 本真实网文（3956 章）与 10 章 deepseek-flash 对比，
+# 结论是「单章上这些规则全部重叠，没有一条能用单一阈值把 AI 与人类切开」。
+# fp-v2（2026-11-12）用本机语料重标定（dev 20 本 899 章 / hold 19 本 854 章，
+# 单章 CJK 2000-5000 字，段落口径 = style.paragraphs_of）：
 #
-#   规则                    人类p50  人类p95  人类max   AI p50  AI max
-#   em_dash                    0        5        30      10      17
-#   period_per_paragraph       2        4       329      4       5
-#   simile_density             3       10        39     7.5      10
-#   scene_rotation             0        2         6      0       2
+#   规则                     人类p50  人类p75  人类p90  人类p95  人类p99  max
+#   not_x_but_y  (次/章)        1        2        3        3        5      7
+#   em_dash      (次/章)        0        1        4        9       28     75
+#   new_long_rate(超长段占比)   0.000    0.012    0.073    0.143    0.289  0.465
+#   simile_dense_rate           0.000    0.007    0.017    0.023    0.042  0.155
+#   scene_new    (标记数)       0        1        2        3        4      5
 #
-# 结论：**单章上这些规则全部重叠，没有一条能用单一阈值把 AI 与人类切开。**
-# 中位数差异明显（em_dash 0 vs 10），但人类小说里 em_dash=30、段落句号=329
-# 的章节真实存在（那是作者的个人风格），所以任何「单章超阈值即拒绝」的硬门
-# 都会误杀人类写的好书。
+# 阈值就取在人类 p90-p95 之间，容许"作者的个人风格"但拦住系统性密集。
+# 单条越界的误杀率都压到 1%-9%（旧口径是 25%-99.9%），详见各常量注释。
 #
-# 因此这些规则一律保持 severity="warn"（只记分不阻断）。要升级成硬门，
-# 需要的是**跨章聚合判据**（例如连续 N 章的章级中位数持续偏高），
-# 不是把单章阈值调一调 —— 后者只会把误杀率从 23% 调到另一个数字。
+# 仍然不能当硬门：``passed=False`` 在人类章节上仍有 4.7%-8.0% 的误杀率，
+# 只够"建议看一眼"，不够"判定不能用"。真要硬门得靠跨章聚合
+# （``ndecon/quality/drift.py``），那才是唯一验证过误杀率的判据。
 #
-# ---- 阈值（可按作者语感校准） ----
-# "不是 X，是 Y" 句式：该项目实测 663 次 -> 清洗到 31 次，是全书工作量最大的单项修复
-NOT_X_BUT_Y_PER_CHAPTER = 2
-# 中文破折号：更严的口径是全书 <= 20
-DASH_PER_CHAPTER = 1
-# 段落内句号数（过长段落是 AI 的典型形态）
-PERIOD_PER_PARAGRAPH = 2
-# 比喻密度
-SIMILE_PER_PARAGRAPH = 1
-SIMILE_PER_CHAPTER = 3
-# 连续"的"：3 个及以上（"的的的"）判违规
+# ---- 阈值（按作者语感可校准，改常量即可） ----
+# "不是 X，是 Y" 句式：人类 p95=3、p99=5。取 3 时误杀 dev 4.8% / hold 3.0%
+NOT_X_BUT_Y_PER_CHAPTER = 3
+# 中文破折号：人类 p90=4、p95=9（有作者整章 75 个，属个人风格）。取 5 时误杀 dev 8.8% / hold 4.0%
+DASH_PER_CHAPTER = 5
+# 超长段（段内句号 > PERIOD_PER_PARAGRAPH 的段）占全部段落的比例。
+# 旧口径"段内句号最大值 <= 2"误杀 34%-57%（人类 p95=6、max=24）；
+# 换成占比后取 0.15 误杀 dev 4.9% / hold 0.0%。
+LONG_PARAGRAPH_RATE = 0.15
+# 单段判"超长"的句号数（只用来算占比，不再直接判罚）
+PERIOD_PER_PARAGRAPH = 3
+# 比喻密度：人类 simile_chapter p90=10、p95=12；超标段占比 p95=0.023、p99=0.042。
+# 旧口径是"整章<=3 且 每段<=1"双重合取，误杀 34.3%；现在只保留章级上限 + 占比。
+SIMILE_PER_CHAPTER = 10
+SIMILE_DENSE_RATE = 0.05
+# 连续"的"：3 个及以上（"的的的"）判违规。人类 p99=1，误杀 dev 1.5% / hold 3.0%
 DE_REPEAT_ALLOWED = 2
-# 场景轮换下限（启发式，见 _scene_markers）
+# 场景轮换：**不参与判定**，只展示计数。人类中位 0、p95=3、max=5，
+# 旧判据" >= 5 才算过"方向反了（等于要求每章都有 5 处转场词），单条误杀 99.9%。
+# 保留常量是为了报告里能显示"启发式计数"，不代表这是个合格门槛。
 SCENE_ROTATION_MIN = 5
 # 单章正文字数下限
 CJK_PER_CHAPTER_MIN = 2000
+# 累计越界口径：warn 规则里最多允许几条越界。人类章节 >=2 条越界的比例
+# dev 8.0% / hold 4.7%，与 style.py 五条联合误杀率 4.3% 同量级。
+MAX_WARN_VIOLATIONS = 1
 # 阈值的校准体量：规则次数按"一章 2000-3500 字"标定，
 # 显著超过该体量的文本（如整篇调研报告）绝对次数不可比，CLI 会如实提示
 CHAPTER_CALIBRATION_CHARS = 5000
@@ -92,7 +119,12 @@ def count_cjk(text: str) -> int:
 
 
 def split_paragraphs(text: str) -> list[str]:
-    """按空行切段；无空行时退化为按行切（保证单段文本也能被度量）。"""
+    """按空行切段；无空行时退化为按行切（保证单段文本也能被度量）。
+
+    历史口径，**已不再用于判罚**：真实网文 txt 多为单换行分段，按空行切会把
+    一整章当成一段（实测人类章 p95 从 6 涨到 117）。保留它只是为了兼容旧的
+    调用方与测试；``scan_chapter`` 已改用 ``ndecon.quality.style.paragraphs_of``。
+    """
     blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
     if len(blocks) <= 1:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -135,7 +167,12 @@ class FingerprintReport(BaseModel):
     paragraph_count: int = Field(description="段落数")
     scene_rotations: int = Field(description="场景轮换次数（启发式）")
     findings: list[FingerprintFinding] = Field(default_factory=list)
-    passed: bool = Field(description="是否所有 warn 规则均未越界")
+    passed: bool = Field(
+        description=(
+            f"warn 规则越界条数是否 ≤ {MAX_WARN_VIOLATIONS}"
+            "（单条越界只提示，累计越多越可疑）"
+        )
+    )
 
 
 @dataclass
@@ -155,7 +192,7 @@ class _Sample:
 
 def scan_chapter(text: str) -> FingerprintReport:
     """扫描一章正文，返回只读报告（不修改、不产出替代文本）。"""
-    paragraphs = split_paragraphs(text)
+    paragraphs = paragraphs_of(text)
     cjk = count_cjk(text)
     findings: list[FingerprintFinding] = []
 
@@ -184,37 +221,45 @@ def scan_chapter(text: str) -> FingerprintReport:
         )
     )
 
-    # 3. 段落内句号数（过长段落）
-    long_paras: list[str] = []
+    # 3. 超长段占比（段内句号数超过 PERIOD_PER_PARAGRAPH 的段，占全部段落的比例）
+    long_count = 0
     max_periods = 0
     for para in paragraphs:
         n = len(_PERIOD_RE.findall(para))
         max_periods = max(max_periods, n)
         if n > PERIOD_PER_PARAGRAPH:
-            long_paras.append(f"第{n}句")
+            long_count += 1
+    long_rate = (long_count / len(paragraphs)) if paragraphs else 0.0
     findings.append(
         FingerprintFinding(
             rule="period_per_paragraph",
-            label=f"段落内句号 ≤ {PERIOD_PER_PARAGRAPH} 个",
-            value=float(max_periods),
-            limit=float(PERIOD_PER_PARAGRAPH),
-            detail=(f"超标段数 {len(long_paras)}" if long_paras else ""),
-            passed=max_periods <= PERIOD_PER_PARAGRAPH,
+            label=(
+                f"超长段占比 ≤ {LONG_PARAGRAPH_RATE:.0%}"
+                f"（单段句号 > {PERIOD_PER_PARAGRAPH} 视为超长）"
+            ),
+            value=round(long_rate, 4),
+            limit=float(LONG_PARAGRAPH_RATE),
+            detail=(f"超长段 {long_count}/{len(paragraphs)}，最长段 {max_periods} 句"),
+            passed=long_rate <= LONG_PARAGRAPH_RATE,
         )
     )
 
-    # 4. 比喻密度（段落级 + 章级）
+    # 4. 比喻密度（章级上限 + 密集段占比）
     para_similes = [len(_SIMILE_RE.findall(para)) for para in paragraphs]
     chapter_similes = sum(para_similes)
-    dense_paras = sum(1 for n in para_similes if n > SIMILE_PER_PARAGRAPH)
+    dense_paras = sum(1 for n in para_similes if n > 1)
+    dense_rate = (dense_paras / len(paragraphs)) if paragraphs else 0.0
     findings.append(
         FingerprintFinding(
             rule="simile_density",
-            label=f"比喻：一段 ≤ {SIMILE_PER_PARAGRAPH}、整章 ≤ {SIMILE_PER_CHAPTER}",
+            label=(
+                f"比喻：整章 ≤ {SIMILE_PER_CHAPTER} 处，"
+                f"且密集段（一段 ≥2 处）占比 ≤ {SIMILE_DENSE_RATE:.0%}"
+            ),
             value=float(chapter_similes),
             limit=float(SIMILE_PER_CHAPTER),
-            detail=(f"超标段数 {dense_paras}" if dense_paras else ""),
-            passed=chapter_similes <= SIMILE_PER_CHAPTER and dense_paras == 0,
+            detail=(f"密集段 {dense_paras}/{len(paragraphs)}"),
+            passed=(chapter_similes <= SIMILE_PER_CHAPTER and dense_rate <= SIMILE_DENSE_RATE),
         )
     )
 
@@ -236,11 +281,15 @@ def scan_chapter(text: str) -> FingerprintReport:
     findings.append(
         FingerprintFinding(
             rule="scene_rotation",
-            label=f"场景轮换 ≥ {SCENE_ROTATION_MIN} 个（启发式）",
+            label="场景轮换计数（启发式，不判定）",
             value=float(rotations),
             limit=float(SCENE_ROTATION_MIN),
-            detail="按段首时空/地点切换词与转场连接词计数，非语义理解",
-            passed=rotations >= SCENE_ROTATION_MIN,
+            detail=(
+                "按段首时空/地点切换词与转场连接词计数，非语义理解；"
+                "人类中位 0、p95=3，故只展示不判罚"
+            ),
+            severity="info",
+            passed=True,
         )
     )
 
@@ -269,13 +318,15 @@ def scan_chapter(text: str) -> FingerprintReport:
         )
     )
 
-    passed = all(finding.passed for finding in findings if finding.severity == "warn")
+    violations = sum(
+        1 for finding in findings if finding.severity == "warn" and not finding.passed
+    )
     return FingerprintReport(
         cjk_chars=cjk,
         paragraph_count=len(paragraphs),
         scene_rotations=rotations,
         findings=findings,
-        passed=passed,
+        passed=violations <= MAX_WARN_VIOLATIONS,
     )
 
 

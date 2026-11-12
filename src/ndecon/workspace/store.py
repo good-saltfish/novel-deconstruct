@@ -189,6 +189,10 @@ class WorkspaceStore:
         兼容旧布局：早期版本把章节摘要塞在 project.json 的 ``summaries`` 里，
         现在改为 ``summaries/chNNN.json``。读到非空旧字段时自动迁移出去，
         避免老工作区在摘要外置后"看起来一切正常、实际摘要全丢"。
+
+        注意顺序：迁移**必须在建模型之前**从裸 dict 里取。``CreationProject`` 上
+        已经没有 ``summaries`` 字段了，pydantic 默认 ``extra="ignore"`` 会把该键
+        静默丢掉——先建模型再迁移，旧摘要就再也看不见了。
         """
         file = self._existing_path_for(project_id)
         if not file.is_file():
@@ -196,21 +200,25 @@ class WorkspaceStore:
         data = json.loads(read_text_with_retry(file))
         if data["meta"]["kind"] == "reference":
             return ReferenceProject(**data)
+        legacy_summaries = data.pop("summaries", None)
         project = CreationProject(**data)
-        if project.summaries:
-            self._migrate_inline_summaries(project)
+        if isinstance(legacy_summaries, dict) and legacy_summaries:
+            self._migrate_inline_summaries(project, legacy_summaries)
         return project
 
-    def _migrate_inline_summaries(self, project: CreationProject) -> None:
-        """把 project.json 里的旧摘要搬进 summaries/ 并清空旧字段。"""
-        for key, summary in list(project.summaries.items()):
-            match = re.match(r"^ch(\d+)$", key)
-            if not match:
+    def _migrate_inline_summaries(
+        self, project: CreationProject, legacy: dict[str, object]
+    ) -> None:
+        """把 project.json 里的旧摘要搬进 summaries/，并把旧字段从盘上抹掉。"""
+        for key, raw in legacy.items():
+            match = re.match(r"^ch(\d+)$", str(key))
+            if not match or not isinstance(raw, dict):
                 continue
             order = int(match.group(1))
             if not self.read_summary(project.meta.id, order):
-                self.write_summary(project.meta.id, order, summary.model_dump())
-        project.summaries = {}
+                self.write_summary(project.meta.id, order, raw)
+        # project 是从已经 pop 掉 summaries 的 data 建出来的，重新落盘即等于抹掉旧字段，
+        # 也就不会每次读项目都重跑一遍迁移。
         self.save_creation(project)
 
     def write_project_artifact(self, project_id: str, filename: str, payload: dict) -> Path:

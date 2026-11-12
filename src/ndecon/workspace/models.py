@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from ndecon.creation.models import CreationDraft, ManuscriptRecord, SettingEntry
-from ndecon.domain.models import Aggregation, ChapterSummary
+from ndecon.domain.models import Aggregation
 
 ProjectKind = Literal["reference", "creation"]
 
@@ -63,10 +63,11 @@ class CreationProject(BaseModel):
     confirmed_parts: dict[str, PartState] = Field(default_factory=dict)
     # 已写章节：键为 "ch<order>"，正文 Markdown 另存 manuscripts/chNNN.md
     manuscripts: dict[str, ManuscriptRecord] = Field(default_factory=dict)
-    # 已落盘的章节结构化摘要：键为 "ch<order>"，供检索索引注入已写章节内容
-    # （t3 缺陷 #3 修复）。仅存结构化摘要，绝不含小说原文/成句
-    # （摘要文本由 plot_points.summary 拼装，SourceRef.quote 永不进入索引）。
-    summaries: dict[str, ChapterSummary] = Field(default_factory=dict)
+    # 章节结构化摘要在早期版本里是这里的 summaries 字段，现在**已外置**到
+    # summaries/chNNN.json（store.read_summary / list_summaries 读）。
+    # 注意：字段本身已删除——它在生成链路里从来没被写过，唯一的效果是让读代码的人
+    # 以为"摘要在这里"（agent/tools.py 曾据此读它，结果恒为空）。旧工作区的数据由
+    # WorkspaceStore.get() 在反序列化前搬盘，不会丢。
     # 连写游标：已推进到第几章（resume 从 cursor+1 继续；全自动连跑的唯一进度真相）
     cursor: int = Field(default=0, ge=0, description="已提交的最大章号；0 表示尚未开始")
     # Planner Agent 提交的设定候选；经 accept 接口确认后落库（候选不代笔）

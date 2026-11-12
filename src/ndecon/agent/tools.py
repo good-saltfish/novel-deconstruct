@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
 from ndecon.agent.models import AgentDrafts, Beat, SettingEntry, TaskType
+from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.retrieval.context import build_context_pack
 from ndecon.retrieval.foreshadow import (
@@ -78,6 +79,10 @@ class ToolContext:
     chapter_order: int | None
     workspace: Path
     drafts: AgentDrafts
+    # 已写章节的结构化摘要。摘要外置到 summaries/chNNN.json 后 project.json 不再持有
+    # 整本摘要，调用方必须显式加载并传进来；缺省空列表意味着"这本书还没写过任何章"，
+    # 而不是"去 project 上找"——project 上已经没有这个字段了。
+    summaries: list[ChapterSummary] = field(default_factory=list)
 
 
 class ToolDef(ABC):
@@ -230,10 +235,13 @@ class SearchOwnBook(ToolDef):
         ``!="summary_chapter"`` 恒为真（等于没过滤）。这里用正确 doc_type 把
         细纲骨架与已写章节摘要一起召回，但排除本书自身的章节摘要重复曝光给当前章。
         同时把项目里已落盘的章节摘要注入索引（t3 缺陷 #3：已写章节此前永不入索引）。
+
+        摘要来源是 ``ctx.summaries``（调用方显式加载）：摘要外置后 project.json 上
+        已没有 summaries 字段，早先这里读 ``ctx.project.summaries`` 恒为空，
+        等于那个"修复"从来没生效过。
         """
         order = ctx.chapter_order or 1
-        summaries = list((ctx.project.summaries or {}).values())
-        pack = build_context_pack(ctx.project, order, summaries=summaries or None)
+        pack = build_context_pack(ctx.project, order, summaries=ctx.summaries or None)
         # doc_type 真实值为 "chapter_summary"；排除"摘要"类文档，只展示细纲/设定骨架，
         # 避免把"已写章节摘要"当成搜索结果回灌给模型（摘要已在 previous_summary 里用）。
         hits = [d for d in pack.retrieved if d.doc_type != "chapter_summary"][:BOOK_TOP_K]

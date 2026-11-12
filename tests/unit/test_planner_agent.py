@@ -312,6 +312,56 @@ def test_methodology_snippet_flattened_to_one_line(tmp_path) -> None:
         assert line.startswith("- 来源 ") or line.startswith("知识库无命中")
 
 
+def test_run_planner_forwards_summaries_to_tools(tmp_path, monkeypatch) -> None:
+    """run_planner 的 summaries 必须落到 ToolContext（外置摘要链路的最后一环）。
+
+    摘要外置后 project.json 上不再有 summaries 字段，工具只能从调用方拿。
+    这里直接盯 ToolContext：``SearchOwnBook`` 会过滤掉 doc_type="chapter_summary"
+    的文档，用搜索结果文本反推"摘要有没有入索引"根本无从判断，只能锁透传本身。
+    """
+    from ndecon.agent import runner as runner_mod
+    from ndecon.agent.tools import ToolContext
+    from ndecon.domain.enums import ThemeTag, Tone
+    from ndecon.domain.models import ChapterSummary, PlotPoint, SourceRef
+
+    store = WorkspaceStore(tmp_path)
+    summary = ChapterSummary(
+        model_id="rule:fake",
+        prompt_version="oc-v0",
+        chapter_id="ch2",
+        order=2,
+        title="第2章",
+        gist="巡夜第二晚",
+        plot_points=[
+            PlotPoint(
+                index=1,
+                summary="林盏点亮铜灯",
+                tone=Tone.HOT_BLOODED,
+                theme_tags=[ThemeTag.GROWTH],
+                characters=["林盏"],
+                source=SourceRef(chapter_id="ch2", start=0, end=5, quote="xxxxx", content_hash="x"),
+            )
+        ],
+        characters=["林盏"],
+    )
+    seen: list[ToolContext] = []
+    real_execute = runner_mod.execute_tool
+
+    def spy(tool_id, raw_args, ctx):
+        seen.append(ctx)
+        return real_execute(tool_id, raw_args, ctx)
+
+    monkeypatch.setattr(runner_mod, "execute_tool", spy)
+    llm = _ScriptedLLM([
+        json.dumps({"thought": "查书", "tool": "search_own_book", "args": {"query": "林盏"}},
+                   ensure_ascii=False),
+    ])
+    run_planner(llm=llm, project=_project(store), task="expand_chapter", workspace=tmp_path,
+                chapter_order=2, summaries=[summary], max_turns=3)
+    assert seen, "工具没有被调用，测试前提失效"
+    assert all(ctx.summaries == [summary] for ctx in seen)
+
+
 def test_expand_chapter_requires_order() -> None:
     """expand_chapter 缺章号直接报错（编程错误，不应进入循环）。"""
     with pytest.raises(ValueError):
