@@ -21,7 +21,7 @@ from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band
 from ndecon.retrieval.context import ContextPack
 
-CHAPTER_PROMPT_VERSION = "cw-v0"
+CHAPTER_PROMPT_VERSION = "cw-v1"
 
 # 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
 CHAPTER_SCENE_SEED = 20261101
@@ -90,6 +90,8 @@ def context_brief(pack: ContextPack) -> str:
             f"这是硬要求：不足 {low} 字会被打回重写。"
         )
 
+    lines.append(style_card(pack.target_chars))
+
     if pack.previous_summary:
         lines.append(f"\n【前一章摘要】（来源：{pack.previous_summary_source}）\n{pack.previous_summary}")
     if pack.retrieved:
@@ -107,6 +109,95 @@ def context_brief(pack: ContextPack) -> str:
         for reason in pack.repair_feedback:
             lines.append(f"- {reason}")
     return "\n".join(lines)
+
+
+def style_card(target_chars: int = 0) -> str:
+    """笔法约束卡：只写有实测分布的几条，每条附一对反例。
+
+    为什么需要它：本函数加入之前，``context_brief`` 给模型的全部信息是「设定 + 细纲
+    + 字数 + 前情 + 伏笔」，**没有一条关于怎么写**。模型只能退回训练分布的中心——
+    统计意义上最"安全"的文学腔，也就是读者说的 AI 味。
+
+    为什么是这几条：把本机 67 本真实网文 5829 章与 AI 章节逐项对比（按书取中位，
+    再比人类跨书 SD），只有下列指标能把两边分开且误杀人类 ≤5%；「句子太短」「长句
+    太少」「比喻太多」在按书复核后都不成立（人类作者句均字从 14.6 到 35.6 都有人写），
+    所以这里一条都不提。密度类判据的单位是「每千汉字」，所以这里必须按
+    ``target_chars`` 折算成整章预算再说给模型——直接写 2.85 它不知道在说什么。
+    """
+    limits = _style_limits()
+    budget = target_chars if target_chars > 0 else 2600
+
+    def total(metric: str, floor: int = 1) -> int | None:
+        """把「每千字密度上限」折成整章允许的绝对次数。"""
+        per_k = limits.get(metric)
+        if per_k is None:
+            return None
+        return max(floor, int(round(per_k * budget / 1000)))
+
+    dash = total("破折号密度")
+    body = total("身体外化密度")
+    clause = limits.get("分句均字")
+    single = limits.get("单句段占比")
+    para = limits.get("段均句数")
+
+    lines = ["\n【笔法约束（数字来自 67 本真实网文 5829 章的实测分布，不是口味偏好）】"]
+    if single is not None:
+        lines.append(
+            f"1. 分段：至少 {single:.0%} 的段落只有一句话，一句话就换行。"
+            "真实网文靠空行制造停顿；把三四句挤进一段会把节奏压平。"
+        )
+    if dash is not None:
+        lines.append(
+            f"2. 破折号「——」：整章不超过 {dash} 个。"
+            "破折号不是「补充说明」的万能工具，用多了会把动作和解释焊在一起。"
+        )
+    if body is not None:
+        lines.append(
+            f"3. 情绪：优先直接说（「他有点发怵」），"
+            f"胸口/喉咙/指尖这类身体反应整章不超过 {body} 处。"
+        )
+    if clause is not None:
+        lines.append(
+            f"4. 断句：逗号之间的平均字数不低于 {clause:.0f} 字。"
+            "别把一句话切成一串四个字的碎片——那是均匀的鼓点，不是人说话。"
+        )
+    if para is not None:
+        lines.append(
+            "5. 结尾：用动作或对话收尾，不要总结、升华、点题。"
+            f"（顺带：单段平均句数别超过 {para:.1f} 句。）"
+        )
+    lines.append(
+        "6. 允许「平」的句子存在：推进动作和信息时不要每句都加比喻、身体反应或"
+        "精确读数。一章里必须有一部分句子是老实交代，全章都在描写就已经是 AI 味。"
+    )
+    lines.append(
+        "7. 比喻最多 3 个，且不要都取痛觉与器械（钝刀、针、冰水、磨砂玻璃、"
+        "橡皮擦）——真实作者会用「像扛一根扁担」这种生活化的喻体。"
+    )
+    lines.append(
+        "\n反例（左边是最容易写出来的那种，右边是同一个意思的人类写法）：\n"
+        "- 差：他笑了一下——那种没什么温度的笑，嘴角动了，眼睛没动。\n"
+        "  好：他笑了一下，眼睛没动。\n"
+        "- 差：喉咙发紧，指尖发凉，胸口像压了块石头。\n"
+        "  好：他有点发怵，捏着合同没说话。\n"
+        "- 差：他低头。看着合同。月薪四千。试用期三个月。违约金三十万。\n"
+        "  好：他低头把合同翻到第二页，月薪四千，试用期三个月，违约金三十万。\n"
+        "- 差：他站起来，走到窗边，看着楼下的车流，心里忽然明白了什么。这座城市"
+        "从来不缺努力的人，缺的是被人看见的机会。\n"
+        "  好：他站起来走到窗边，楼下的车流一动不动。「签不签？」王振在背后问。"
+    )
+    return "\n".join(lines)
+
+
+
+def _style_limits() -> dict[str, float]:
+    """从笔法基线读「人类典型值」；读不到就返回空字典（prompt 少一段也不能炸）。"""
+    try:
+        from ndecon.quality.style import rule_limits
+
+        return rule_limits("prompt")
+    except Exception:  # noqa: BLE001 - 基线文件缺失不该毁掉整章生成
+        return {}
 
 
 def _chapter_output_spec() -> dict:

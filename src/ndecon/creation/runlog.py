@@ -60,6 +60,11 @@ class ChapterRun(BaseModel):
         description="硬门失败的可读说明（含实测值），与 gate_failures 同序",
     )
     soft_scores: dict[str, float] = Field(default_factory=dict)
+    # 文风体检：越界项占 5 条判据的比例（0–1）与逐条可读说明。
+    # 与 soft_scores 分开：soft_scores 是闸门自己的软分，style 是「人类基线比对」。
+    # 单看分数没意义（人类书也常越 1 条），要看 details 指出的是哪一条。
+    style_score: float = Field(default=0.0, ge=0.0, le=1.0, description="文风越界占比")
+    style_details: list[str] = Field(default_factory=list, description="文风越界逐条说明")
     # 不阻断入库的提示（如字数不在目标带）。和 gate_details 分开存：一个是
     # 「这章被退回了，因为…」，一个是「这章入库了，但你应该知道…」。混在一起
     # 会让用户以为所有提示都是失败。

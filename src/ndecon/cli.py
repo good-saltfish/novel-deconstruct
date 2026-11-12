@@ -290,6 +290,90 @@ def lint(
 
 
 @app.command()
+def style(
+    input_file: Path = typer.Argument(..., help="待体检的正文文件（UTF-8 .md/.txt，一章）"),
+    strict: bool = typer.Option(False, "--strict", help="有越界项时以非零退出码结束（供 CI/git hook 用）"),
+    json_out: bool = typer.Option(False, "--json", help="输出机器可读 JSON（供脚本聚合）"),
+) -> None:
+    """按 novel-project 语料实测的人类分位，检查一章的节奏笔法（**不改写**）。
+
+    与 ``lint`` 的分工：``lint`` 数的是可疑词句的次数（破折号几个），阈值要作者自己
+    校准；``style`` 量的是节奏量（分句长度、段落句数、单句成段比例），阈值是本机
+    67 本 5,829 章实测出来的分位线，带留出集回放的误杀率。
+
+    永远以退出码 0 结束，除非 ``--strict``：这些判据只够「建议改」，不够「判定不能用」。
+    """
+    import json as _json
+
+    from ndecon.quality.style import MIN_STYLE_CHARS, baseline_meta, inspect_style
+
+    text = _read_text(input_file)
+    report = inspect_style(text)
+    meta = baseline_meta()
+
+    if json_out:
+        typer.echo(
+            _json.dumps(
+                {
+                    "file": str(input_file),
+                    "version": report.version,
+                    "cjk_chars": report.cjk_chars,
+                    "score": report.score,
+                    "passed": report.passed,
+                    "metrics": report.metrics,
+                    "findings": [
+                        {
+                            "metric": f.metric,
+                            "value": f.value,
+                            "limit": f.limit,
+                            "bound": f.bound,
+                            "direction": f.direction,
+                            "percentile": f.percentile,
+                            "evidence": f.evidence,
+                        }
+                        for f in report.findings
+                    ],
+                    "baseline": meta,
+                },
+                ensure_ascii=False,
+                indent=1,
+            )
+        )
+        if strict and not report.passed:
+            raise typer.Exit(code=1)
+        return
+
+    typer.echo(f"笔法体检（{report.version}）：{input_file}")
+    typer.echo(
+        f"字数 {report.cjk_chars} / 基线来自 {meta['books']} 本 {meta['chapters']} 章"
+        f"（留出 {meta['holdout_books']} 本 {meta['holdout_chapters']} 章验收误杀率）"
+    )
+    if not report.metrics:
+        typer.secho(f"正文不足 {MIN_STYLE_CHARS} 字，量不出稳定分布，跳过。", fg=typer.colors.YELLOW)
+        return
+    if report.passed:
+        typer.secho("结论：五项节奏判据全部落在人类分布内。", fg=typer.colors.GREEN)
+        return
+    for finding in report.findings:
+        arrow = "高于" if finding.direction == "hi" else "低于"
+        typer.secho(
+            f"  [越界] {finding.metric} 实测 {finding.value:g}，"
+            f"{arrow}人类 {finding.bound} 线 {finding.limit:g}"
+            f"（人类 {finding.percentile:.1f} 分位）",
+            fg=typer.colors.YELLOW,
+        )
+        if finding.evidence:
+            typer.echo(f"         例：{finding.evidence}")
+    typer.secho(
+        f"结论：{len(report.findings)} 项越界 —— 这是节奏分布信号，不是「是不是 AI」的判定；"
+        f"组合门槛（越界 >1 条）在留出集上误杀 4.3%、抓住 AI 100%。",
+        fg=typer.colors.YELLOW,
+    )
+    if strict:
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def scaffold(
     out: Path = typer.Option(Path("."), "--out", help="台账输出目录"),
     project_id: str = typer.Option("", "--project", help="可选：用创作项目已有细纲/人设预填"),

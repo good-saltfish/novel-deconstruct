@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ndecon.creation.chapters import CHAPTER_PROMPT_VERSION
 from ndecon.panel.server import api_request, serve_in_thread
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "synthetic_novel.txt"
@@ -155,7 +156,9 @@ def test_chapter_writing_loop_generate_edit_confirm(server) -> None:
     record = body["record"]
     assert record["status"] == "draft"
     assert record["model_id"] == "rule:fake-chapter"
-    assert record["prompt_version"] == "cw-v0"
+    # 版本号跟着代码走：写死字符串会让每次改 prompt 都要顺手改一处测试，
+    # 而这条测试真正要断言的是「记录里存了当前 prompt 的版本」，不是某个历史值。
+    assert record["prompt_version"] == CHAPTER_PROMPT_VERSION
     assert record["word_count"] > 0
     assert record["review"]["hook_strength"] in (1, 2, 3, 4, 5)
     assert "Fake 占位正文" in body["content"]

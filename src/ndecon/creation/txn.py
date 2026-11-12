@@ -33,7 +33,13 @@ from ndecon.creation.models import ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
 from ndecon.quality.fingerprint import scan_chapter
-from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, GateReport, check_chapter
+from ndecon.quality.gates import (
+    CHAPTER_TARGET_CHARS_DEFAULT,
+    PLACEHOLDER_BANNER,
+    GateReport,
+    check_chapter,
+)
+from ndecon.quality.style import StyleReport, inspect_style
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.models import ChapterSummary, CreationProject
 from ndecon.workspace.store import WorkspaceStore
@@ -41,6 +47,28 @@ from ndecon.workspace.store import WorkspaceStore
 # 修复重写上限：两次。全自动连跑里"无限重试"是灾难——它会让一本书卡在一章上
 # 烧光预算；两次之后接受现状并标异常，交给人（或整本暂停）。
 MAX_REPAIR_ATTEMPTS = 2
+# 文风重写上限：一次。文风是「锦上添花」，硬门是「不能出错」——为文风多花一轮
+# 生成预算、还可能把已过硬门的章节写坏，最多只值一轮。
+MAX_STYLE_REWRITES = 1
+# 越界几条才触发文风重写。留出集 6770 章实测：人类章「越界 >1 条」占 4.3%，
+# AI 章 100% 至少越界 2 条，所以「>1」是既贴合人类常态又能抓住 AI 的分界。
+STYLE_ADVISORY_LIMIT = 1
+
+
+def _style_findings(style: StyleReport | None) -> int:
+    """越界条数；没做体检（占位正文）记 0，这样它不会被更差的版本顶掉。"""
+    return len(style.findings) if style is not None else 0
+
+
+def _style_advisories(style: StyleReport | None) -> list[str]:
+    """把文风体检结果转成一行行人话，进 advisories。
+
+    为什么要单独一个函数：落盘记录与 `ChapterOutcome` 两处都要这份文案，
+    各写一遍必然漂移（历史上 `summary_present` 就是这么写歪的）。
+    """
+    if style is None or not style.findings:
+        return []
+    return [f"文风：{finding.as_detail()}" for finding in style.findings]
 # 连续多少章被降级接受后自动暂停整本：3 章说明系统性问题（provider/提示词/设定崩了）
 CONSECUTIVE_DEGRADE_LIMIT = 3
 
@@ -63,6 +91,10 @@ class ChapterOutcome:
     hard_failure_details: list[str] = field(default_factory=list)
     # 不阻断入库的提示（字数不在目标带等）。界面必须显示，否则用户以为闸门什么都没看。
     advisories: list[str] = field(default_factory=list)
+    # 文风体检的分数（越界项 / 判据总数）与逐条说明。与 advisories 里的「文风：」
+    # 行同源，但分开存是因为调用方（候选页、台账）要能单独排序与聚合。
+    style_score: float = 0.0
+    style_details: list[str] = field(default_factory=list)
     sample_quotes: list[str] = field(default_factory=list)
     cost_tokens: int = 0
     error: str = ""
@@ -230,6 +262,11 @@ def run_chapter(
     report: GateReport | None = None
     content = ""
     error = ""
+    style: StyleReport | None = None
+    # 通过硬门的那一版正文。文风重写只在这之上做增量优化：任何一次重写把章节
+    # 写坏（不再过硬门），都退回这一版——绝不用「文风更像人」换来「这章不合格」。
+    accepted: tuple[str, GateReport, StyleReport | None] | None = None
+    style_rewrites = 0
     while attempt < max_repairs + 1:
         attempt += 1
         # 这里是最耗时的阶段（真模型一章 25 秒到几分钟），进度必须说清楚
@@ -252,19 +289,47 @@ def run_chapter(
             previous_fingerprints=_recent_fingerprints(store, project, order),
             length_gate=length_gate,
         )
-        if report.verdict == "pass":
-            break
+        # 笔法体检：与 prompt 里那张卡读同一份基线（`style_baseline.json`）。
+        # 它**不是**闸门：人类小说单章与 AI 在单章上必然有重叠，拦了会误杀真书。
+        # 所以只做两件事——记进台账当证据、越界多了就带着证据重写一次。
+        #
+        # 占位正文免检，理由与 `gates._drift_series` 里那条完全一致：
+        # `FakeChapterWriter` 产的是「跑通链路的假稿」，模板化成段（段均 10 句），
+        # 必然越界，判它文风没有意义；而离线链路正是没有模型时唯一的验证手段。
+        # 真实模型不会产出那行 banner，所以豁免不会放过真 AI 味。
+        style = None if PLACEHOLDER_BANNER in content else inspect_style(content)
         if report.verdict == "reject":
             error = "闸门判定不可修复：" + "、".join(f.rule for f in report.hard_failures)
             break
+        if report.verdict == "pass":
+            if accepted is None or _style_findings(style) < _style_findings(accepted[2]):
+                accepted = (content, report, style)
+            if style is None or len(style.findings) <= STYLE_ADVISORY_LIMIT or style_rewrites >= MAX_STYLE_REWRITES:
+                break
+            if attempt >= max_repairs + 1:
+                # 预算用完了：这一版已经过硬门，收下它，别为了文风把章节丢掉。
+                break
+            style_rewrites += 1
+            pack = pack.model_copy(
+                update={
+                    "repair_feedback": [
+                        *(f"文风：{line}" for line in style.feedback()),
+                    ]
+                }
+            )
+            continue
         # repair：把失败证据塞回 prompt，让模型带着具体问题重写一版
-        pack = pack.model_copy(
-            update={
-                "repair_feedback": [
-                    f"{failure.rule}：{failure.detail}" for failure in report.hard_failures
-                ]
-            }
-        )
+        previous_feedback = [
+            f"{failure.rule}：{failure.detail}" for failure in report.hard_failures
+        ]
+        # 硬门之外顺带把文风问题一起说：模型一次只改一件事的话，第二次又会在
+        # 同一个地方跌倒（实测：修好字数后破折号又回来了）。
+        previous_feedback.extend(f"文风：{line}" for line in style.feedback())
+        pack = pack.model_copy(update={"repair_feedback": previous_feedback})
+
+    # 收下「过硬门且文风最干净」的那一版；没有就说明这章确实没成。
+    if accepted is not None and (report is None or report.verdict != "pass"):
+        content, report, style = accepted
 
     if report is None or report.verdict != "pass":
         record.attempts = attempt
@@ -279,7 +344,12 @@ def run_chapter(
         # 也不知道该换模型还是改细纲。detail 里带着实测值（"实测 1200 字，
         # 目标 2600 字"），这才是能指导下一步的证据。
         record.gate_details = [f.detail for f in (report.hard_failures if report else [])]
-        record.advisories = list(report.advisories) if report else []
+        record.advisories = [
+            *(report.advisories if report else []),
+            *_style_advisories(style),
+        ]
+        record.style_score = style.score if style else 0.0
+        record.style_details = [f.as_detail() for f in style.findings] if style else []
         record.error = error or "超过修复重试上限"
         record.output_hash = content_hash(content) if content else ""
         run.write(record)
@@ -396,7 +466,11 @@ def run_chapter(
     record.gate_verdict = report.verdict
     record.soft_scores = report.soft_scores
     record.cjk_chars = report.cjk_chars
-    record.advisories = list(report.advisories)
+    # 文风体检结果与硬门提示并列进 advisories：它跟「字数偏短」是同一类东西——
+    # 不阻断入库，但用户必须看得见，否则等于什么都没查。
+    record.advisories = [*report.advisories, *_style_advisories(style)]
+    record.style_score = style.score if style else 0.0
+    record.style_details = [f.as_detail() for f in style.findings] if style else []
     record.summary_present = summary_present
     record.summary_source = summary_source
     record.status = "committed"
@@ -416,6 +490,8 @@ def run_chapter(
         cjk_chars=report.cjk_chars,
         summary_present=summary_present,
         summary_source=summary_source,
-        advisories=list(report.advisories),
+        advisories=record.advisories,
+        style_score=record.style_score,
+        style_details=record.style_details,
         run_id=run.run_id,
     )

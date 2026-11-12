@@ -403,6 +403,8 @@ un_server 传 server.jobs），不能在这里新建：
                 parts = path.strip("/").split("/")
                 if len(parts) == 6 and parts[3] == "chapters" and parts[5] == "lint":
                     self._lint_chapter(parts[2], parts[4])
+                elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "style":
+                    self._style_chapter(parts[2], parts[4])
                 elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "context":
                     self._get_chapter_context(parts[2], parts[4])
                 elif len(parts) == 6 and parts[3] == "chapters" and parts[5] == "versions":
@@ -1516,6 +1518,50 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(404, "本章尚无正文，无法扫描")
                 return
             self._send_json(200, scan_chapter(content).model_dump())
+
+        def _style_chapter(self, project_id: str, order_text: str) -> None:
+            """按人类语料基线体检本章的节奏笔法；只读，不改正文一个字。
+
+            与 ``/lint`` 的分工写进响应体（``baseline`` 与 ``note``），
+            否则前端两个按钮看起来是在做同一件事。
+            """
+            from ndecon.quality.style import baseline_meta, inspect_style
+
+            loaded = self._load_creation_for_chapter(project_id, order_text)
+            if loaded is None:
+                return
+            project, _target = loaded
+            content = store.read_manuscript(project.meta.id, int(order_text))
+            if not content or not content.strip():
+                self._error(404, "本章尚无正文，无法体检")
+                return
+            report = inspect_style(content)
+            self._send_json(
+                200,
+                {
+                    "order": int(order_text),
+                    "version": report.version,
+                    "cjk_chars": report.cjk_chars,
+                    "score": report.score,
+                    "passed": report.passed,
+                    "metrics": report.metrics,
+                    "findings": [
+                        {
+                            "metric": f.metric,
+                            "value": f.value,
+                            "limit": f.limit,
+                            "bound": f.bound,
+                            "direction": f.direction,
+                            "percentile": f.percentile,
+                            "evidence": f.evidence,
+                            "detail": f.as_detail(),
+                        }
+                        for f in report.findings
+                    ],
+                    "baseline": baseline_meta(),
+                    "note": "节奏分布信号，不是「是不是 AI」的判定；不改正文。",
+                },
+            )
 
         def _confirm_chapter(self, project_id: str, order_text: str) -> None:
             """把一章正文标记为用户确认；不改正文一个字。"""

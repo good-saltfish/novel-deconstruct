@@ -25,7 +25,7 @@ from ndecon.creation.models import (
     ProtagonistProfile,
 )
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id
-from ndecon.quality.gates import check_chapter
+from ndecon.quality.gates import PLACEHOLDER_BANNER, check_chapter
 from ndecon.workspace.models import CreationProject, ProjectMeta
 from ndecon.workspace.store import WorkspaceStore
 
@@ -434,6 +434,101 @@ def test_repair_feedback_lands_in_prompt() -> None:
     brief = context_brief(pack)
     assert "上一版未通过硬门" in brief
     assert "chapter_length" in brief
+
+
+def _sentences(chars: int = 2600) -> list[str]:
+    """把既定夹具切成句子（保留句末标点），用于拼「人类腔」与「AI 腔」两种正文。"""
+    text = _long_text(chars)
+    return [s for s in re.findall(r"[^。！？\n]+[。！？]", text) if s.strip()]
+
+
+def _human_chapter() -> str:
+    """人类腔：一行一句。实测基线里 5 条判据全部落在人类分布内。"""
+    return "\n".join(_sentences())
+
+
+def _ai_chapter() -> str:
+    """AI 腔：三句挤一段 + 每四段一个破折号。
+
+    刻意**只**动排版与破折号（都是纯机械改动），内容仍是同一批句子——这样
+    它同时过硬门、却在笔法体检上越界 3 条（破折号密度 / 段均句数 / 单句段占比），
+    正好用来测「闸门说可以、笔法说再改改」这条分叉。
+    """
+    sentences = _sentences()
+    paras = ["".join(sentences[i : i + 3]) for i in range(0, len(sentences), 3)]
+    for i in range(0, len(paras), 4):
+        if "，" in paras[i]:
+            paras[i] = paras[i].replace("，", "——", 1)
+    return "\n".join(paras)
+
+
+class _ScriptedWriter(_GoodWriter):
+    """按调用次序返回不同正文，并记下每次收到的 ``repair_feedback``。"""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__(texts[0])
+        self._texts = texts
+        self.packs: list[list[str]] = []
+
+    def write_chapter(self, pack):  # noqa: ANN001
+        self.packs.append(list(pack.repair_feedback))
+        index = min(len(self.packs) - 1, len(self._texts) - 1)
+        self._text = self._texts[index]
+        return super().write_chapter(pack)
+
+
+def test_style_advisory_triggers_one_rewrite(tmp_path, monkeypatch) -> None:
+    """笔法越界 >1 条时带证据重写一次；重写成人类腔后收下更干净的那版。
+
+    为什么是「重写」而不是「拦下」：人类小说单章与 AI 在单章上必然重叠，
+    硬拦会误杀真书（留出集实测单条误杀 2.2%–5.1%）。所以只建议重写，
+    且**绝不用「文风更像人」换「这章不合格」**。
+    """
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _ScriptedWriter([_ai_chapter(), _human_chapter()])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=1)
+    assert outcome.status == "committed"
+    assert outcome.attempts == 2  # 1 次首写 + 1 次文风重写
+    assert writer.calls == 2
+    # 第二次的 prompt 必须带着第一次的体检证据，否则等于让模型再猜一遍。
+    assert any("文风：" in note for note in writer.packs[1])
+    # 收下的是人类腔那一版：越界清零。
+    assert outcome.style_score == 0.0
+    assert outcome.style_details == []
+
+
+def test_style_rewrite_never_loses_a_gate_passing_chapter(tmp_path, monkeypatch) -> None:
+    """两次都越界也要入库：文风是锦上添花，不能因此丢掉已过硬门的章。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _ScriptedWriter([_ai_chapter()])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.status == "committed"
+    # 上限是一次重写，不跟着 max_repairs 无限重试（文风不值那么多预算）。
+    assert outcome.attempts == 2
+    assert writer.calls == 2
+    assert outcome.style_score > 0
+    assert outcome.style_details, "越界必须留下逐条说明，否则用户不知道该改什么"
+    assert store.read_manuscript(project.meta.id, 1) is not None
+
+
+def test_placeholder_text_is_exempt_from_style(tmp_path, monkeypatch) -> None:
+    """占位正文免检：``FakeChapterWriter`` 的模板稿必然越界，判它文风没有意义。"""
+    store = _store(tmp_path)
+    project = _project(store)
+    writer = _ScriptedWriter([PLACEHOLDER_BANNER + "\n\n" + _ai_chapter()])
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+
+    outcome = txn.run_chapter(store, project, 1, provider="fake", max_repairs=2)
+    assert outcome.status == "committed"
+    assert outcome.attempts == 1, "占位正文不该为文风再重写一轮"
+    assert outcome.style_score == 0.0
+    assert not any("文风：" in note for note in outcome.advisories)
 
 
 def test_prompt_states_target_length() -> None:
