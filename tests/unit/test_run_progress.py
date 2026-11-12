@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from tests.unit.test_creation_txn import _long_text, _project, _store
@@ -241,9 +242,24 @@ def test_pause_only_between_chapters(tmp_path, monkeypatch) -> None:
     import ndecon.creation.jobs as jobs_module
     import ndecon.creation.txn as txn
 
+    class _SlowWriter(_GoodWriter):
+        """每章慢一点：让「暂停确实落在第 1、2 章之间」成为确定的事。
+
+        `_GoodWriter` 本身是瞬时返回的，三章可能在测试来得及举手之前就跑完了
+        ——那会让 `assert live.state == JOB_PAUSED` 变成靠线程调度的运气。
+        这里只是把写正文拖慢一点，正文内容与新鲜度门的行为都不变。
+        """
+
+        def write_chapter(self, pack):  # noqa: ANN001
+            time.sleep(0.15)
+            return super().write_chapter(pack)
+
     store = _store(tmp_path)
     project = _project(store, chapters=3)
-    writer = _GoodWriter(_long_text(2600))
+    # 各章正文必须不同：同一个 run 里连写三章，若三章正文一模一样会被
+    # `cross_chapter_similarity` 硬门正确拦下（`_GoodWriter` 的 docstring 也这么写）。
+    # 这里本来就只看「暂停有没有把在写的那一章切成半截」，不该被新鲜度门干扰。
+    writer = _SlowWriter(lambda order: _long_text(2600, seed=20261101 + order))
     monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
     monkeypatch.setattr(jobs_module, "run_chapter", txn.run_chapter)
 
@@ -258,17 +274,133 @@ def test_pause_only_between_chapters(tmp_path, monkeypatch) -> None:
         auto_accept=True,
         max_repairs=1,
     )
+    # 在**第一章写着的时候**举手：这才是「当前章照常提交完，下一章不开始」。
+    # 直接在 start() 之后立刻 pause 是靠线程调度赌运气——赌赢了暂停落在开写
+    # 之前（written=0，也是合法结果），赌输了落在一章中间。这里等它真的进入
+    # 第一章的某个进行中阶段再举手，语义就固定了。
+    _wait_until(lambda: job.current_order >= 1 and job.current_phase not in ("", "start"), job)
     registry.pause(job.run_id)
-    for _ in range(200):
+    for _ in range(500):
         if registry.get(job.run_id) is None or registry.get(job.run_id).state != JOB_RUNNING:
             break
-        import time
-
         time.sleep(0.02)
     live = registry.get(job.run_id)
     assert live is not None
     assert live.state == jobs_module.JOB_PAUSED
-    # 暂停时已提交的章必须是真的写完了，不是半截
-    assert live.written >= 1
+    # 举手时第一章还没提交完，但它必须被完整写完才停 —— 这正是「举手不掐断」
+    assert live.written == 1
+    assert live.written < 3, "暂停后不许把剩下的章偷偷写完"
     saved = store.read_manuscript(project.meta.id, 1)
     assert saved and len(saved) > 1000
+
+
+def _run_batch(store, project, *, first, last, writer, run_id=None):
+    """起一个连写任务并等它跑完，返回最终的 BatchJob。"""
+    import ndecon.creation.jobs as jobs_module
+
+    registry = jobs_module.JobRegistry()
+    job = registry.start(
+        store,
+        store.get(project.meta.id),
+        first=first,
+        last=last,
+        provider="fake",
+        provider_obj=None,
+        auto_accept=True,
+        max_repairs=1,
+        run_id=run_id,
+    )
+    for _ in range(3000):
+        if job.state != JOB_RUNNING:
+            break
+        time.sleep(0.01)
+    return job
+
+
+def test_resume_skips_committed_chapters(tmp_path, monkeypatch) -> None:
+    """同一个 run_id 再跑一次：已 committed 的章必须跳过，不重写、不推游标。
+
+    用户的原话是「中途失败只能手动重新开始」。这里钉住续跑的两个后果：
+    已经写好的章不再白烧一轮 token，也不会把用户可能改过的稿子覆盖掉；
+    跳过的章单独计入 `skipped`，`written` 只算本轮真写的。
+    """
+    from tests.unit.test_creation_txn import _GoodWriter
+
+    import ndecon.creation.jobs as jobs_module
+    import ndecon.creation.txn as txn
+
+    store = _store(tmp_path)
+    project = _project(store, chapters=3)
+    writer = _GoodWriter(lambda order: _long_text(2600, seed=20261101 + order))
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+    monkeypatch.setattr(jobs_module, "run_chapter", txn.run_chapter)
+
+    first_pass = _run_batch(store, project, first=1, last=2, writer=writer, run_id="run-resume")
+    assert first_pass.state == jobs_module.JOB_FINISHED
+    assert first_pass.written == 2
+    assert first_pass.skipped == 0
+    # 用户改了第一章的稿子：续跑绝不能覆盖它
+    store.write_manuscript(project.meta.id, 1, "用户手改过的第一章。")
+
+    second_pass = _run_batch(store, project, first=1, last=3, writer=writer, run_id="run-resume")
+    assert second_pass.state == jobs_module.JOB_FINISHED
+    assert second_pass.written == 1, "本轮只该真写第 3 章"
+    assert second_pass.skipped == 2, "第 1、2 章已 committed，必须跳过"
+    assert [ch["order"] for ch in second_pass.chapters] == [3]
+    assert store.read_manuscript(project.meta.id, 1) == "用户手改过的第一章。"
+    assert store.get(project.meta.id).cursor == 3
+
+
+def test_resume_retries_chapter_left_in_progress(tmp_path, monkeypatch) -> None:
+    """上次进程被杀留下的 in_progress 记录必须被回收并重跑那一章。
+
+    真实现场：`txn.run_chapter` 开跑第一件事就是写 `in_progress`，所以进程
+    一被杀就一定留下这条死记录。如果只按「有记录」判断「这章跑过」，它会
+    永远既不重跑也不完成——界面一直显示「这一章在跑」。
+    """
+    from tests.unit.test_creation_txn import _GoodWriter
+
+    import ndecon.creation.jobs as jobs_module
+    import ndecon.creation.txn as txn
+
+    store = _store(tmp_path)
+    project = _project(store, chapters=2)
+    writer = _GoodWriter(lambda order: _long_text(2600, seed=20261101 + order))
+    monkeypatch.setattr(txn, "_build_writer", lambda provider, obj: writer)
+    monkeypatch.setattr(jobs_module, "run_chapter", txn.run_chapter)
+
+    # 手工造一条「上次被杀」的死记录：in_progress、没有正文
+    log = RunLog(store.projects_dir / project.meta.id, "run-killed")
+    log.write(
+        ChapterRun(
+            run_id="run-killed",
+            project_id=project.meta.id,
+            order=1,
+            provider="fake",
+            started_at="2026-11-12T20:00:00",
+        )
+    )
+    assert log.read(1) is not None and not log.read(1).settled  # type: ignore[union-attr]
+
+    job = _run_batch(store, project, first=1, last=2, writer=writer, run_id="run-killed")
+    assert job.state == jobs_module.JOB_FINISHED
+    assert job.skipped == 0, "死记录不算已提交"
+    assert job.written == 2
+    assert store.read_manuscript(project.meta.id, 1) is not None
+    assert log.read(1) is not None and log.read(1).status == "committed"  # type: ignore[union-attr]
+
+
+def _wait_until(predicate, job, *, timeout: float = 30.0) -> None:
+    """等后台线程把条件跑成真；超时就把任务当前状态报出来，别只留一个 assert False。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        if job.state != JOB_RUNNING:
+            break
+        time.sleep(0.02)
+    raise AssertionError(
+        f"等不到条件成立：state={job.state} written={job.written} "
+        f"current_order={job.current_order} current_phase={job.current_phase} "
+        f"error={job.error}"
+    )

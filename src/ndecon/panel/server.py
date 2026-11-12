@@ -1857,6 +1857,11 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(400, f"length_gate 必须是布尔值：{length_gate!r}")
                 return
 
+            # 不传 from 就从游标接着写。这里的 `project.cursor` 已经是盘上真相：
+            # `store.get()` 读项目时会调 `_heal_cursor`，把游标补到
+            # `manuscripts/` 里最大的章号（游标陈旧的三个来源——逐章生成、
+            # 版本还原、早期没有 cursor 字段的文件——都在那一处兜住）。
+            # 所以不要在这里再算一遍「磁盘最大章号」，否则两边口径会分叉。
             first = start or (project.cursor + 1)
             last = end or total
             if not start and first > total:

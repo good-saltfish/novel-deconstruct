@@ -321,6 +321,81 @@ def test_chapters_run_batch_writes_and_resumes(server) -> None:
     assert status == 400 and "区间" in body["error"]
 
 
+def test_chapters_run_batch_continues_from_disk_when_cursor_is_stale(server) -> None:
+    """游标停在 0 而盘上已有正文时，不传 from 的连写必须从最后一章之后接着写。
+
+    真事故（用户实测）：老项目的 ``project.json`` 里没有 ``cursor``（默认 0），
+    盘上却有 ch001-ch009。「接着往下写」于是变成「从第 1 章重写」，九章被覆盖。
+    前端也按 ``cursor + 1`` 算默认区间，所以修必须落在**读项目**这一处，
+    否则接口和界面两边都会把区间算错。
+    """
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "陈旧游标书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    # 先用连写真实写掉两章
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 2, "provider": "fake", "run_id": "run-stale-1"},
+    )
+    assert status == 202, started
+    _wait_batch(server, cre_id, "run-stale-1")
+
+    # 把 cursor 手动打回 0，模拟「写正文不推游标」的老项目
+    project_file = server.workspace_store._path_for(cre_id)  # noqa: SLF001
+    payload = json.loads(project_file.read_text(encoding="utf-8"))
+    payload["cursor"] = 0
+    project_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    # 读一次项目就该被修好：这是前端拿默认区间的来源
+    _, full = api_request(server, "GET", f"/api/projects/{cre_id}")
+    assert full["cursor"] == 2, "读项目时游标必须被修到盘上真相"
+
+    # 不传 from：续跑必须从第 3 章开始，而不是第 1 章
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs", {"to": 4, "provider": "fake"}
+    )
+    assert status == 202, started
+    assert started["from"] == 3, started
+    more = _wait_batch(server, cre_id, started["run_id"])
+    assert more["written"] == 2
+    assert [ch["order"] for ch in more["chapters"]] == [3, 4]
+
+
+def test_chapters_run_batch_skips_committed_on_same_run_id(server) -> None:
+    """拿同一个 run_id 再发一次：已提交的章不重写，只补没写的。
+
+    崩溃后重试是最常见的情形，用户手上还是原来那个 run_id。
+    这里钉住「不再白烧一轮 token」和「不覆盖用户可能改过的稿子」。
+    """
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "重试书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate")
+
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 2, "provider": "fake", "run_id": "run-retry"},
+    )
+    assert status == 202, started
+    _wait_batch(server, cre_id, "run-retry")
+
+    original = server.workspace_store.read_manuscript(cre_id, 1)  # noqa: SLF001
+    assert original
+
+    # 同一个 run_id 再发一次，范围扩大到 4 章
+    status, started = api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 4, "provider": "fake", "run_id": "run-retry"},
+    )
+    assert status == 202, started
+    more = _wait_batch(server, cre_id, "run-retry")
+
+    assert more["written"] == 2, "本轮只该真写第 3、4 章"
+    assert [ch["order"] for ch in more["chapters"]] == [3, 4]
+    # 第 1 章正文一个字节都不许变
+    assert server.workspace_store.read_manuscript(cre_id, 1) == original  # noqa: SLF001
+
+
 def test_chapters_run_batch_rejects_concurrent_run(server) -> None:
     """同一项目已有连写在跑时，第二次请求被 409 拒并带回正在跑的 run_id。
 

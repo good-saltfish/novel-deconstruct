@@ -193,6 +193,8 @@ class WorkspaceStore:
         注意顺序：迁移**必须在建模型之前**从裸 dict 里取。``CreationProject`` 上
         已经没有 ``summaries`` 字段了，pydantic 默认 ``extra="ignore"`` 会把该键
         静默丢掉——先建模型再迁移，旧摘要就再也看不见了。
+
+        读的时候顺手把 ``cursor`` 修到盘上真相，见 ``_heal_cursor``。
         """
         file = self._existing_path_for(project_id)
         if not file.is_file():
@@ -204,7 +206,59 @@ class WorkspaceStore:
         project = CreationProject(**data)
         if isinstance(legacy_summaries, dict) and legacy_summaries:
             self._migrate_inline_summaries(project, legacy_summaries)
-        return project
+        return self._heal_cursor(project)
+
+    def _written_cursor(self, project: CreationProject) -> int:
+        """盘上真实的「已经写到第几章」：manuscripts/chNNN.md 的最大章号。
+
+        只看文件不只看 ``project.manuscripts`` 的键：正文才是事实。历史工作区里
+        确实出现过「键没了、文件还在」（早期版本只写文件不写记录），反过来
+        「键在、文件被回滚删掉」也有——以文件为准两头都不会错。
+        """
+        highest = 0
+        manuscripts_dir = self._project_dir(project.meta.id) / "manuscripts"
+        if not manuscripts_dir.is_dir():
+            return 0
+        for path in manuscripts_dir.glob("ch*.md"):
+            match = re.match(r"^ch(\d+)\.md$", path.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+        return highest
+
+    def _heal_cursor(self, project: CreationProject) -> CreationProject:
+        """读项目时把陈旧的 ``cursor`` 修到盘上真相，并落盘一次。
+
+        真事故（用户实测反馈）：老项目 ``project.json`` 里的 ``cursor`` 停在 0，
+        而 ``manuscripts/`` 下已经躺着 ch001-ch009。连写的默认区间是
+        ``cursor + 1`` 起（前端也算这一份），于是「接着往下写」变成「从第 1 章
+        重写一遍」—— 已经写好的九章被整章覆盖，白烧九轮 token。
+
+        游标陈旧的来源有三个，都不是 bug 而是「写正文不等于推游标」：
+          1. 逐章生成 ``POST /chapters/<n>/generate`` 只写正文与记录，不推游标；
+          2. 版本还原 ``restore_version`` 只改记录状态，不推游标；
+          3. 早期版本的 ``project.json`` 干脆没有 ``cursor`` 字段（默认 0）。
+
+        所以修的地方只能是**读**这一处：任何入口（面板、CLI、连写线程）拿到
+        项目时游标都已经是真相，不需要各自再算一遍。
+
+        写入走 ``update_creation``（锁内重读再改）而不是 ``save_creation``：
+        后者拿的是本次读到的快照，整份覆盖写会把并发写入的编辑抹掉——那正是
+        功能审计 B-2 的老毛病，不能为了修游标再犯一次。
+        """
+        on_disk = self._written_cursor(project)
+        if on_disk <= project.cursor:
+            return project
+
+        def _bump(latest: CreationProject) -> None:
+            latest.cursor = max(latest.cursor, on_disk)
+
+        try:
+            return self.update_creation(project.meta.id, _bump)
+        except (KeyError, OSError):
+            # 项目在两次读之间被删了：返回内存里这份，把游标补上就好，
+            # 不要因为「修游标失败」让一次普通的读项目整个失败。
+            project.cursor = on_disk
+            return project
 
     def _migrate_inline_summaries(
         self, project: CreationProject, legacy: dict[str, object]

@@ -65,6 +65,10 @@ class BatchJob:
     state: str = JOB_RUNNING
     written: int = 0
     failures: int = 0
+    # 续跑时跳过的章数：这些章在发起前就已经 committed（正文、游标都落过盘），
+    # 本轮不再重写。单独计数而不是并进 written —— 界面上「这次写了 2 章」和
+    # 「这次跳过 3 章、写了 2 章」是两件事，混在一起会让人以为白跑了。
+    skipped: int = 0
     error: str = ""
     started_at: str = ""
     ended_at: str = ""
@@ -188,7 +192,20 @@ class JobRegistry:
     ) -> None:
         """后台线程主体：逐章跑事务，任何异常都记进任务状态。"""
         try:
+            # 续跑：先看这个 run 目录里上次跑到哪了。同一个 run_id 被重新
+            # 发起时（崩溃后重试、或调用方拿旧 run_id 再 POST 一次），盘上
+            # 会留着上次的记录。两种记录的处理完全不同：
+            #   committed —— 正文、摘要、游标都已经落盘，再跑一遍就是白烧
+            #                一轮 token，还会把用户可能已经改过的稿子覆盖掉；
+            #   in_progress —— 上次进程被杀时留下的半截记录，正文没写、游标
+            #                没动，只有先结算成失败，这一章才会被重跑。
+            log = RunLog(project_dir_for(store, job.project_id), job.run_id)
+            log.reclaim_stale(reason="上次连写中断，这一章没有跑完，已回收为失败")
+            already = log.committed_orders()
             for order in range(job.first, job.last + 1):
+                if order in already:
+                    job.skipped += 1
+                    continue
                 # 用户点了暂停：只在两章之间停。当前章的事务已经完整提交，
                 # 所以这里退出不会留下半截正文，也不会丢已写好的章。
                 if job.pause_requested:

@@ -293,6 +293,76 @@ def test_legacy_inline_summaries_are_migrated(tmp_path) -> None:
     assert not hasattr(store.get("creation-legacy-1"), "summaries")
 
 
+def test_get_heals_stale_cursor_from_disk(tmp_path) -> None:
+    """游标停在 0 而盘上已有正文时，读项目必须把游标修到真相。
+
+    真事故（用户实测）：老项目 ``project.json`` 里没有 ``cursor`` 字段（默认 0），
+    而 ``manuscripts/`` 下已经躺着 ch001-ch009。连写的默认区间是 ``cursor + 1``
+    起，于是「接着往下写」变成「从第 1 章整章重写」，九章被覆盖。
+
+    游标陈旧的三个来源（逐章生成、版本还原、早期没有该字段）都不写游标，
+    所以修的地方只能是**读**这一处。
+    """
+    store = WorkspaceStore(tmp_path)
+    store.save_creation(CreationProject(meta=_meta(store, "creation-heal-1", "creation", "陈旧游标")))
+    # 只写正文，不动 project.json —— 模拟「写正文不等于推游标」的路径
+    store.write_manuscript("creation-heal-1", 1, "第一章。")
+    store.write_manuscript("creation-heal-1", 2, "第二章。")
+    store.write_manuscript("creation-heal-1", 3, "第三章。")
+
+    healed = store.get("creation-heal-1")
+    assert isinstance(healed, CreationProject)
+    assert healed.cursor == 3
+    # 不只是内存里改了：游标要落盘，否则下次读还是 0
+    on_disk = json.loads(store._path_for("creation-heal-1").read_text(encoding="utf-8"))
+    assert on_disk["cursor"] == 3
+
+
+def test_heal_cursor_uses_highest_chapter_not_contiguous(tmp_path) -> None:
+    """章号不连续时按最大章号回填（用户删过中间章，接着写的应是最后一章之后）。"""
+    store = WorkspaceStore(tmp_path)
+    store.save_creation(CreationProject(meta=_meta(store, "creation-heal-2", "creation", "断号")))
+    for order in (1, 2, 9):
+        store.write_manuscript("creation-heal-2", order, f"第 {order} 章。")
+
+    healed = store.get("creation-heal-2")
+    assert isinstance(healed, CreationProject)
+    assert healed.cursor == 9
+
+
+def test_heal_cursor_never_lowers_existing_cursor(tmp_path) -> None:
+    """游标比盘上正文大时不许往回退：那是「正文被删过」，不是「写到哪」倒退。"""
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-heal-3", "creation", "游标更大"),
+        cursor=7,
+    )
+    store.save_creation(project)
+    store.write_manuscript("creation-heal-3", 2, "第二章。")
+
+    loaded = store.get("creation-heal-3")
+    assert isinstance(loaded, CreationProject)
+    assert loaded.cursor == 7
+
+
+def test_heal_cursor_leaves_clean_project_alone(tmp_path) -> None:
+    """盘上正文与游标一致时不该产生任何写盘动作（读路径不该有副作用）。"""
+    store = WorkspaceStore(tmp_path)
+    project = CreationProject(
+        meta=_meta(store, "creation-heal-4", "creation", "一致"),
+        cursor=2,
+    )
+    store.save_creation(project)
+    store.write_manuscript("creation-heal-4", 1, "第一章。")
+    store.write_manuscript("creation-heal-4", 2, "第二章。")
+    before = store._path_for("creation-heal-4").read_text(encoding="utf-8")
+
+    loaded = store.get("creation-heal-4")
+    assert isinstance(loaded, CreationProject)
+    assert loaded.cursor == 2
+    assert store._path_for("creation-heal-4").read_text(encoding="utf-8") == before
+
+
 def test_project_artifact_filename_whitelist(tmp_path) -> None:
     """项目内 JSON 产物只接受安全文件名，拒绝目录穿越与可执行后缀。"""
     store = WorkspaceStore(tmp_path)
