@@ -946,5 +946,53 @@ def summarize(
     typer.echo("提示：跑一次 ndecon reindex 让索引立刻覆盖本章。")
 
 
+@app.command()
+def export(
+    project_id: str = typer.Argument(..., help="创作项目 ID"),
+    fmt: str = typer.Option("epub", "--format", help="导出格式：epub / docx"),
+    out: Path = typer.Option(Path(""), "--out", help="输出文件路径；默认 ./<书名>.<格式>"),
+    author: str = typer.Option("", "--author", help="epub 的作者字段（可选）"),
+    workspace: Path = typer.Option(Path(".ndecon-workspace"), "--workspace", help="工作区目录"),
+) -> None:
+    """把已写章节导出成 epub / docx。
+
+    只导出盘上真有正文的章；占位正文章节会照常导出但逐条提示（静默丢掉会让
+    「为什么少了三章」变成谜，静默收下会让占位文本被当成真正文发出去）。
+    """
+    from ndecon.render.export import ExportError, build_export, write_export
+
+    store = WorkspaceStore(workspace)
+    try:
+        project = store.get(project_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"找不到项目：{project_id}") from exc
+    if not isinstance(project, CreationProject):
+        raise typer.BadParameter("export 只能用于创作项目")
+
+    try:
+        result = build_export(store, project, fmt=fmt, author=author)
+    except ExportError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    target = out if str(out) else Path(result.filename)
+    if target.suffix.lower() != f".{result.format}":
+        target = target.with_suffix(f".{result.format}")
+    write_export(result, target)
+
+    typer.secho(
+        f"已导出 {result.chapter_count} 章 -> {target}（{len(result.content)} 字节）",
+        fg=typer.colors.GREEN,
+    )
+    if result.placeholder_orders:
+        shown = "、".join(str(order) for order in result.placeholder_orders[:10])
+        more = "" if len(result.placeholder_orders) <= 10 else " 等"
+        typer.secho(
+            f"注意：第 {shown}{more} 章是占位正文（Fake 生成，不是可用内容），"
+            "已照常导出，发布前请替换。",
+            fg=typer.colors.YELLOW,
+        )
+
+
 if __name__ == "__main__":
     app()

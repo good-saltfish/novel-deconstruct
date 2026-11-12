@@ -108,6 +108,20 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
             raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """原子写二进制（导出 docx/epub 用）：加锁 → 唯一临时名 → 替换。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path_lock(path)
+    with lock:
+        tmp = _unique_tmp(path)
+        try:
+            tmp.write_bytes(data)
+            _retry(lambda: os.replace(tmp, path))
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+
 def atomic_write_json(path: Path, payload: object, *, indent: int = 2) -> None:
     """原子写 JSON（``ensure_ascii=False``，中文直接可读）。"""
     atomic_write_text(

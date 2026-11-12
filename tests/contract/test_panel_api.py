@@ -754,3 +754,91 @@ def test_batch_run_survives_engine_restart(server) -> None:
     assert body["written"] == 3, body
     assert body["status"] != "running", body
     assert "从 run 记录读出来" in body["error"], body
+
+
+def _download(server, path: str) -> tuple[int, bytes, dict]:
+    """测试辅助：取二进制响应（导出端点回的不是 JSON，api_request 用不了）。"""
+    import urllib.request
+    from urllib.parse import quote
+
+    host, port = server.server_address[0], server.server_address[1]
+    # 项目 ID 里带中文（allocate_project_id 用书名做前缀），必须 percent-encode
+    url = f"http://{host}:{port}{quote(path, safe='/?=&')}"
+    token = getattr(server, "panel_token", "")
+    headers = {"X-Ndecon-Token": token} if token else {}
+    request: urllib.request.Request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(), dict(exc.headers)
+
+
+def test_export_epub_and_docx_download(server) -> None:
+    """导出端点回的是文件而不是 JSON：两个格式都要能下载、能被解包。
+
+    这条同时锁住三件事：①只导出写了正文的章；②Content-Disposition 里带
+    RFC 5987 的中文文件名；③产物是合法 zip（docx/epub 都是容器格式）。
+    """
+    import io
+    import zipfile
+
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "导出书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate", {"chapter_count": 3})
+    api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 2, "provider": "fake", "run_id": "run-export"},
+    )
+    _wait_batch(server, cre_id, "run-export")
+
+    for fmt, media in (
+        ("epub", "application/epub+zip"),
+        ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ):
+        status, body, headers = _download(server, f"/api/projects/{cre_id}/export?format={fmt}")
+        assert status == 200, body[:200]
+        assert headers["Content-Type"] == media, headers
+        # 中文书名必须走 filename*，否则浏览器显示乱码
+        assert "filename*=UTF-8''" in headers["Content-Disposition"], headers
+        archive = zipfile.ZipFile(io.BytesIO(body))
+        assert archive.testzip() is None
+        if fmt == "docx":
+            assert "word/document.xml" in archive.namelist()
+        else:
+            # EPUB 的硬要求：mimetype 第一个条目且不压缩
+            first = archive.infolist()[0]
+            assert first.filename == "mimetype"
+            assert first.compress_type == zipfile.ZIP_STORED
+            # 只导入 2 章，第 3 章没有正文，不该出现在书里
+            assert "OEBPS/ch003.xhtml" not in archive.namelist()
+
+
+def test_export_without_manuscripts_returns_400(server) -> None:
+    """一章正文都没有时回 400 + 可读文案，而不是一个 0 字节文件。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "空书"})
+    cre_id = cre["meta"]["id"]
+    status, body, _headers = _download(server, f"/api/projects/{cre_id}/export?format=epub")
+    assert status == 400
+    assert "还没有任何正文" in json.loads(body.decode("utf-8"))["error"]
+
+
+def test_export_rejects_unknown_format_and_missing_project(server) -> None:
+    """坏格式 400、不存在的项目 404——两者不能混成同一个错误。"""
+    _, cre = api_request(server, "POST", "/api/projects/create", {"title": "格式书"})
+    cre_id = cre["meta"]["id"]
+    api_request(server, "POST", f"/api/projects/{cre_id}/generate", {"chapter_count": 2})
+    api_request(
+        server, "POST", f"/api/projects/{cre_id}/runs",
+        {"from": 1, "to": 1, "provider": "fake", "run_id": "run-export-fmt"},
+    )
+    _wait_batch(server, cre_id, "run-export-fmt")
+
+    status, body, _headers = _download(server, f"/api/projects/{cre_id}/export?format=pdf")
+    assert status == 400
+    assert "不支持的导出格式" in json.loads(body.decode("utf-8"))["error"]
+
+    status, body, _headers = _download(server, "/api/projects/no-such-project/export")
+    assert status == 404
+    assert "项目不存在" in json.loads(body.decode("utf-8"))["error"]
+

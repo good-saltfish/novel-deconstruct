@@ -16,7 +16,7 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request
 
 from pydantic import ValidationError
@@ -271,6 +271,25 @@ un_server 传 server.jobs），不能在这里新建：
             """返回统一错误结构；文案里的本机绝对路径在这里统一抹掉。"""
             self._send_json(status, {"error": scrub_paths(message)})
 
+        def _send_download(self, filename: str, media_type: str, body: bytes) -> None:
+            """返回一个可下载的文件（导出 epub/docx 用）。
+
+            ``filename`` 走 RFC 5987 的 ``filename*``：书名几乎一定是中文，只用
+            ``filename=`` 会让浏览器按 latin-1 解码成一串乱码，用户拿到一个
+            名字坏掉的文件。同时保留 ASCII 兜底名给老客户端。
+            """
+            self._drain_body()
+            quoted = quote(filename, safe="")
+            self.send_response(200)
+            self.send_header("Content-Type", media_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"export\"; filename*=UTF-8''{quoted}",
+            )
+            self.end_headers()
+            self.wfile.write(body)
+
         # ---- 访问校验 ----
 
         #: 丢弃请求体的上限。超过这个体积就不读了，改成回完直接关连接。
@@ -439,6 +458,13 @@ un_server 传 server.jobs），不能在这里新建：
                     self._get_batch_job(parts[2], parts[4])
                 elif len(parts) == 4 and parts[3] == "runs":
                     self._list_runs(parts[2])
+                elif len(parts) == 4 and parts[3] == "export":
+                    query = parse_qs(parsed.query)
+                    self._export_project(
+                        parts[2],
+                        (query.get("format") or ["epub"])[0],
+                        (query.get("author") or [""])[0],
+                    )
                 elif len(parts) == 3:
                     self._get_project(parts[2])
                 else:
@@ -1371,6 +1397,35 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(404, "项目不存在")
                 return
             self._send_json(200, {"order": order, "versions": stamps})
+
+        def _export_project(self, project_id: str, fmt: str, author: str) -> None:
+            """把已写章节导出成 epub / docx 并作为附件下载。
+
+            GET 而不是 POST：导出不改变任何状态，且浏览器要「点了就下载」——
+            用 POST 就得在前端把响应体转成 Blob 再触发一次下载，多一层容易
+            出错的手工拼装。
+            """
+            from ndecon.render.export import ExportError, build_export
+
+            try:
+                project = store.get(project_id)
+            except KeyError:
+                self._error(404, "项目不存在")
+                return
+            if not isinstance(project, CreationProject):
+                self._error(400, "只有创作项目可以导出")
+                return
+            try:
+                result = build_export(store, project, fmt=fmt, author=author)
+            except ExportError as exc:
+                self._error(400, str(exc))
+                return
+            media_type = (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                if result.format == "docx"
+                else "application/epub+zip"
+            )
+            self._send_download(result.filename, media_type, result.content)
 
         def _list_runs(self, project_id: str) -> None:
             """列出本项目的 run 记录目录与每章终态（可重放的执行台账）。"""
