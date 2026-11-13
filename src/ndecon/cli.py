@@ -320,6 +320,9 @@ def style(
                     "cjk_chars": report.cjk_chars,
                     "score": report.score,
                     "passed": report.passed,
+                    "rule_count": report.rule_count,
+                    "dialogue_checked": report.dialogue_checked,
+                    "dialogue_metrics": report.dialogue_metrics,
                     "metrics": report.metrics,
                     "findings": [
                         {
@@ -348,11 +351,27 @@ def style(
         f"字数 {report.cjk_chars} / 基线来自 {meta['books']} 本 {meta['chapters']} 章"
         f"（留出 {meta['holdout_books']} 本 {meta['holdout_chapters']} 章验收误杀率）"
     )
+    dialogue_block = meta.get("dialogue") or {}
+    if dialogue_block:
+        typer.echo(
+            f"对白基线来自 {dialogue_block['books']} 本 {dialogue_block['chapters']} 章"
+            f"（留出 {dialogue_block['holdout_chapters']} 章验收误杀率）"
+        )
     if not report.metrics:
         typer.secho(f"正文不足 {MIN_STYLE_CHARS} 字，量不出稳定分布，跳过。", fg=typer.colors.YELLOW)
         return
+    scope = (
+        f"{report.rule_count} 项判据（节奏 + 对白）"
+        if report.dialogue_checked
+        else f"{report.rule_count} 项节奏判据（本章无对白，台词判据未参与比对）"
+    )
+    scope = (
+        f"{report.rule_count} 项判据（节奏 + 对白）"
+        if report.dialogue_checked
+        else f"{report.rule_count} 项节奏判据（本章无对白，台词判据未参与比对）"
+    )
     if report.passed:
-        typer.secho("结论：五项节奏判据全部落在人类分布内。", fg=typer.colors.GREEN)
+        typer.secho(f"结论：{scope}全部落在人类分布内。", fg=typer.colors.GREEN)
         return
     for finding in report.findings:
         arrow = "高于" if finding.direction == "hi" else "低于"
@@ -365,8 +384,8 @@ def style(
         if finding.evidence:
             typer.echo(f"         例：{finding.evidence}")
     typer.secho(
-        f"结论：{len(report.findings)} 项越界 —— 这是节奏分布信号，不是「是不是 AI」的判定；"
-        f"组合门槛（越界 >1 条）在留出集上误杀 4.3%、抓住 AI 100%。",
+        f"结论：{len(report.findings)} 项越界 / 共 {scope}—— 这是分布信号，"
+        f"不是「是不是 AI」的判定；组合门槛（越界 >2 条）在留出集上误杀约 1%、抓住 AI 约 67%。",
         fg=typer.colors.YELLOW,
     )
     if strict:

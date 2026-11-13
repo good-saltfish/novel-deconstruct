@@ -68,6 +68,23 @@ _EXPLAIN_RE = re.compile(r"是因为|之所以|原来|这意味着|也就是说|
 _TERMINAL_RE = re.compile(r"[。！？…”」』）)!?~～]$")
 _NOISE_RE = re.compile(r"^[=\-_*#~\s]{4,}$")
 
+# —— 对白（言语）口径 ——
+# 这些正则与 ``_scratch/dialogue_probe.py`` 逐字一致：阈值是按同一套口径量出来的，
+# 差一个字符，阈值和实测值就不在同一个坐标系里。
+_DLG_EXPLAIN_RE = re.compile(r"是因为|之所以|原来|这意味着|也就是说|换句话说|仿佛预示|注定|其实|所以|因为")
+_DLG_POLITE_RE = re.compile(r"请|麻烦|谢谢|不好意思|对不起|劳驾")
+_DLG_ADDRESS_RE = re.compile(r"哥|姐|叔|姨|爷|奶|老板|老大|老师|师父|师兄|师弟|队长|教练")
+_DLG_PRONOUN2_RE = re.compile(r"你|您|你们")
+_DLG_TAIL_RE = re.compile(r"[。！？…—」”]$")
+_DLG_SAY_RE = re.compile(r"说|问|道|答|喊|叫|嚷|嘟囔|低声|开口")
+
+# 对白指标只在「这一章确实在写对话」时才有分布意义。四条门槛与建基线脚本一致；
+# 不达标的章不参与分布，也**不因此判通过**——没写对白的章本来就不该被对白判据评价。
+_DIALOGUE_MIN_PARAS = 8
+_DIALOGUE_MIN_QUOTES = 4
+_DIALOGUE_MIN_CJK = 500
+_DIALOGUE_MIN_DIALOGUE_CJK = 100
+
 # 太短的文本量不出稳定分布：一段 200 字的对话，分句均字和段均句数都没意义。
 MIN_STYLE_CHARS = 300
 # 超过这个长度的「段」多半是章节切分失败或整段没分段，段均句数会被它拖爆。
@@ -108,6 +125,11 @@ class StyleReport:
     findings: list[StyleFinding] = field(default_factory=list)
     cjk_chars: int = 0
     version: str = STYLE_VERSION
+    # 对白判据只在「这一章确实在写对话」时才参与比对（见 measure_dialogue）。
+    # 界面必须能分清「对白三条都过了」和「这章没对白、压根没比」——
+    # 否则没写对话的章看起来比写了对话的章更干净。
+    dialogue_checked: bool = False
+    dialogue_metrics: dict[str, float] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -140,8 +162,13 @@ def _baseline() -> dict[str, object]:
 
 
 def baseline_meta() -> dict[str, object]:
-    """基线元信息：书数/章数/版本，供文档与接口如实标注来源。"""
+    """基线元信息：书数/章数/版本，供文档与接口如实标注来源。
+
+    ``dialogue`` 子块单独报家门：它的语料口径与节奏不同（只统计写了对白的章），
+    混进主表会让「本基线来自 67 本 5829 章」这句话在对白判据上变成假话。
+    """
     data = _baseline()
+    dialogue = data.get("dialogue") if isinstance(data.get("dialogue"), dict) else {}
     return {
         "version": data.get("version"),
         "books": data.get("books"),
@@ -149,7 +176,31 @@ def baseline_meta() -> dict[str, object]:
         "holdout_books": data.get("holdout_books"),
         "holdout_chapters": data.get("holdout_chapters"),
         "rules": list(getattr(data.get("rules"), "keys", lambda: [])()),  # type: ignore[union-attr]
+        "dialogue": {
+            "version": dialogue.get("version"),
+            "books": dialogue.get("books"),
+            "chapters": dialogue.get("chapters"),
+            "holdout_books": dialogue.get("holdout_books"),
+            "holdout_chapters": dialogue.get("holdout_chapters"),
+            "ai_chapters": dialogue.get("ai_chapters"),
+            "rules": list(getattr(dialogue.get("rules"), "keys", lambda: [])()),  # type: ignore[union-attr]
+        }
+        if dialogue
+        else None,
     }
+
+
+def dialogue_rule_limits(mode: str = "judge") -> dict[str, float]:
+    """对白判据的两档刻度，语义与 :func:`rule_limits` 相同。"""
+    rules = _dialogue_rules()
+    key = "prompt" if mode == "prompt" else "limit"
+    out: dict[str, float] = {}
+    for metric, rule in rules.items():
+        if key in rule:
+            out[metric] = float(rule[key])
+        elif "limit" in rule:
+            out[metric] = float(rule["limit"])
+    return out
 
 
 def rule_limits(mode: str = "judge") -> dict[str, float]:
@@ -265,10 +316,94 @@ def measure(text: str) -> dict[str, float]:
     }
 
 
-def _percentile_of(value: float, metric: str) -> float:
-    """把实测值折算成人类分位（线性内插），只为让报告读起来有刻度。"""
-    bounds = _baseline()["percentiles"]  # type: ignore[index]
-    entry = bounds.get(metric) if isinstance(bounds, dict) else None
+def measure_dialogue(text: str) -> dict[str, float]:
+    """量一章的**对白**指标；这一章不像在写对话时返回空字典。
+
+    为什么要单开一套口径：``measure`` 量的是叙述的节奏（段落几行一句、逗号隔
+    多少字），对白根本不在它的坐标系里——一句「滚。」和一句「你他妈再说一遍」
+    在段均句数上完全一样。人类与 AI 在**言语**上错位的维度是另一批：
+    AI 的台词条条完整、句句抒情、每句都在解释、大量「你……」冲着读者说；
+    人类台词多而碎、有被打断的、有废话、有误解、有答非所问。
+
+    门槛（与建基线脚本逐字一致）：段落 ≥8、引号台词 ≥4 条、正文汉字 ≥500、
+    台词汉字 ≥100。不达标的章返回空字典——**没写对白的章不参与分布，
+    也不因此被判通过**；把「没对白」算成「对白判据全过」会让这套判据
+    变成「少写对话就能拿满分」。
+    """
+    paras = paragraphs_of(text)
+    if len(paras) < _DIALOGUE_MIN_PARAS:
+        return {}
+    quotes = [q.strip() for q in _QUOTE_RE.findall(text) if cjk_count(q) >= 1]
+    if len(quotes) < _DIALOGUE_MIN_QUOTES:
+        return {}
+    total = cjk_count(text)
+    if total < _DIALOGUE_MIN_CJK:
+        return {}
+    dlg_cjk = sum(cjk_count(q) for q in quotes)
+    if dlg_cjk < _DIALOGUE_MIN_DIALOGUE_CJK:
+        return {}
+
+    q_lens = [cjk_count(q) for q in quotes]
+    turns = len(quotes)
+    mean_q = st.mean(q_lens)
+    narration = _QUOTE_RE.sub("", text)
+    n_sents = [s.strip() for s in _SENT_RE.findall(narration) if cjk_count(s) >= 2]
+    n_mean = st.mean([cjk_count(s) for s in n_sents]) if n_sents else 0.0
+    dlg_blob = "\n".join(quotes)
+
+    def per_1k(pattern: re.Pattern[str]) -> float:
+        return len(pattern.findall(dlg_blob)) / dlg_cjk * 1000
+
+    quote_paras = [p for p in paras if _QUOTE_RE.search(p)]
+    return {
+        "对白条数每千字": turns / total * 1000,
+        "对白句均字": mean_q,
+        "对白分句均": st.mean(
+            [
+                len([c for c in _CLAUSE_RE.split(q) if cjk_count(c) >= 1])
+                for q in quotes
+            ]
+        ),
+        "对白句长CV": (st.pstdev(q_lens) / mean_q) if mean_q else 0.0,
+        "对白极短条占比": sum(1 for n in q_lens if n <= 3) / turns,
+        "对白短条占比": sum(1 for n in q_lens if n <= 6) / turns,
+        "对白完整句占比": sum(1 for q in quotes if q.endswith("。")) / turns,
+        "对白未收尾占比": sum(1 for q in quotes if not _DLG_TAIL_RE.search(q)) / turns,
+        "对白问号占比": sum(1 for q in quotes if "？" in q or "?" in q) / turns,
+        "对白省略号占比": sum(1 for q in quotes if _ELLIPSIS_RE.search(q)) / turns,
+        "对白破折号占比": sum(1 for q in quotes if _DASH_RE.search(q)) / turns,
+        "对白语气词密度": per_1k(_PARTICLE_RE),
+        "对白解释腔密度": per_1k(_DLG_EXPLAIN_RE),
+        "对白客气语密度": per_1k(_DLG_POLITE_RE),
+        "对白称呼密度": per_1k(_DLG_ADDRESS_RE),
+        "对白第二人称密度": per_1k(_DLG_PRONOUN2_RE),
+        "对白叙述句长比": mean_q / n_mean if n_mean else 0.0,
+        "对白字占比": dlg_cjk / total,
+        "引号句未带说语占比": (
+            sum(1 for p in quote_paras if not _DLG_SAY_RE.search(_QUOTE_RE.sub("", p)))
+            / len(quote_paras)
+            if quote_paras
+            else 0.0
+        ),
+    }
+
+
+def _dialogue_rules() -> dict[str, dict[str, object]]:
+    block = _baseline().get("dialogue")
+    rules = block.get("rules") if isinstance(block, dict) else None
+    return rules if isinstance(rules, dict) else {}
+
+
+def _percentile_of(value: float, metric: str, *, block: str = "") -> float:
+    """把实测值折算成人类分位（线性内插），只为让报告读起来有刻度。
+
+    ``block="dialogue"`` 时查对白那张分位表——两套指标同名不同源，
+    查错表会让「对白条数 25 条/千字」被读成节奏表里的某个分位。
+    """
+    data = _baseline()
+    bounds = data.get(block) if block else data
+    percentiles = bounds.get("percentiles") if isinstance(bounds, dict) else None
+    entry = percentiles.get(metric) if isinstance(percentiles, dict) else None
     if not entry:
         return 0.0
     points = [
@@ -304,6 +439,18 @@ def _evidence(text: str, metric: str) -> str:
         "单句段占比": None,
         "段均句数": None,
     }
+    if metric.startswith("对白"):
+        quotes = [q.strip() for q in _QUOTE_RE.findall(text)]
+        if metric == "对白破折号占比":
+            for q in quotes:
+                if _DASH_RE.search(q):
+                    return f"「{q}」"[:60]
+        if metric == "对白第二人称密度":
+            for q in quotes:
+                if _DLG_PRONOUN2_RE.search(q):
+                    return f"「{q}」"[:60]
+        if metric == "对白条数每千字":
+            return f"（全章引号台词 {len(quotes)} 条）"
     pattern = patterns.get(metric)
     paras = paragraphs_of(text)
     if pattern is not None:
@@ -324,39 +471,68 @@ def _evidence(text: str, metric: str) -> str:
 
 
 def inspect_style(text: str) -> StyleReport:
-    """跑一遍单章笔法体检。文本太短时返回空报告（``cjk_chars`` 仍如实填）。"""
+    """跑一遍单章笔法体检。文本太短时返回空报告（``cjk_chars`` 仍如实填）。
+
+    两套判据一起比：**节奏**（段落/句子怎么排）与**对白**（台词怎么说）。
+    对白那三条只在 ``measure_dialogue`` 有值时才参与——没写对话的章不背对白判据，
+    也不因为「没写」而拿满分。
+    """
     cjk = cjk_count(text)
     metrics = measure(text)
     if not metrics:
         return StyleReport(metrics={}, findings=[], cjk_chars=cjk, _rule_count=0)
 
-    rules = _baseline()["rules"]  # type: ignore[index]
     findings: list[StyleFinding] = []
+    rules = _baseline().get("rules")
     if isinstance(rules, dict):
-        for metric, rule in rules.items():
-            if metric not in metrics:
-                continue
-            value = metrics[metric]
-            limit = float(rule["limit"])
-            direction = str(rule["dir"])
-            over = value > limit if direction == "hi" else value < limit
-            if not over:
-                continue
-            findings.append(
-                StyleFinding(
-                    metric=metric,
-                    value=round(value, 4),
-                    limit=limit,
-                    bound=str(rule["bound"]),
-                    direction=direction,
-                    percentile=_percentile_of(value, metric),
-                    evidence=_evidence(text, metric),
-                )
-            )
+        findings.extend(
+            _collect_findings(text, metrics, rules, block="")
+        )
+    dialogue_metrics = measure_dialogue(text)
+    dialogue_rules = _dialogue_rules() if dialogue_metrics else {}
+    if dialogue_metrics and dialogue_rules:
+        findings.extend(
+            _collect_findings(text, dialogue_metrics, dialogue_rules, block="dialogue")
+        )
     findings.sort(key=lambda f: (f.direction == "lo", -abs(f.value - f.limit)))
     return StyleReport(
-        metrics={k: round(v, 4) for k, v in metrics.items()},
+        metrics={k: round(v, 4) for k, v in {**metrics, **dialogue_metrics}.items()},
         findings=findings,
         cjk_chars=cjk,
-        _rule_count=len(rules) if isinstance(rules, dict) else 0,
+        _rule_count=(len(rules) if isinstance(rules, dict) else 0)
+        + len(dialogue_rules),
+        dialogue_checked=bool(dialogue_metrics),
+        dialogue_metrics={k: round(v, 4) for k, v in dialogue_metrics.items()},
     )
+
+
+def _collect_findings(
+    text: str,
+    metrics: dict[str, float],
+    rules: dict[str, dict[str, object]],
+    *,
+    block: str,
+) -> list[StyleFinding]:
+    """按一张规则表比一遍。``block`` 只影响分位查哪张表。"""
+    out: list[StyleFinding] = []
+    for metric, rule in rules.items():
+        if metric not in metrics:
+            continue
+        value = metrics[metric]
+        limit = float(rule["limit"])
+        direction = str(rule["dir"])
+        over = value > limit if direction == "hi" else value < limit
+        if not over:
+            continue
+        out.append(
+            StyleFinding(
+                metric=metric,
+                value=round(value, 4),
+                limit=limit,
+                bound=str(rule["bound"]),
+                direction=direction,
+                percentile=_percentile_of(value, metric, block=block),
+                evidence=_evidence(text, metric),
+            )
+        )
+    return out

@@ -18,6 +18,7 @@ from ndecon.quality.style import (
     MIN_STYLE_CHARS,
     baseline_meta,
     cjk_count,
+    dialogue_rule_limits,
     inspect_style,
     measure,
     paragraphs_of,
@@ -169,3 +170,74 @@ def test_prompt_rules_match_baseline_numbers() -> None:
     prompt = rule_limits("prompt")
     assert pytest.approx(prompt["破折号密度"], abs=1e-6) == 0.6223
     assert pytest.approx(prompt["段均句数"], abs=1e-6) == 1.2131
+
+
+def _dialogueish(chars: int = 1200) -> str:
+    """造一段「AI 味台词」：条条完整、句句在解释、满嘴「你……」、破折号焊解释。"""
+    block = (
+        "「你听我说，这地方不能待了。」\n"
+        "「为什么不能待？」\n"
+        "「因为你已经被人盯上了——从你进门的第一分钟起。」\n"
+        "「那你又是谁？」\n"
+        "「我是来救你的人。」\n"
+        "「你凭什么救我？」\n"
+        "「因为你不该死在这里。」\n"
+    )
+    out: list[str] = []
+    while cjk_count("\n".join(out)) < chars:
+        out.append(block)
+    return "\n".join(out)
+
+
+def test_dialogue_metrics_are_skipped_when_chapter_has_no_quotes() -> None:
+    """没写对白的章不进对白分布，也**不能**因此算作「对白判据全过」。
+
+    这条守的是最容易被"优化"掉的语义：如果 ``measure_dialogue`` 对无对白章返回
+    全零指标，那些指标全都会落在人类分布内，于是「一句对话都不写」变成满分策略。
+    """
+    report = inspect_style(_humanish(1200))
+    assert report.dialogue_checked is False
+    assert report.dialogue_metrics == {}
+    assert report.rule_count == 5  # 只有节奏五条参与比对
+
+
+def test_dialogue_metrics_join_the_comparison_when_quotes_exist() -> None:
+    """有对白时判据数从 5 变 8，且对白指标落进 metrics。"""
+    report = inspect_style(_dialogueish(1200))
+    assert report.dialogue_checked is True
+    assert report.rule_count == 8
+    for metric in ("对白条数每千字", "对白破折号占比", "对白第二人称密度"):
+        assert metric in report.metrics
+        assert metric in report.dialogue_metrics
+
+
+def test_dialogue_findings_point_at_the_offending_line() -> None:
+    """对白越界也要给原文证据，否则作者不知道改哪句。"""
+    report = inspect_style(_dialogueish(1200))
+    by_metric = {f.metric: f for f in report.findings}
+    assert "对白第二人称密度" in by_metric
+    assert "你" in by_metric["对白第二人称密度"].evidence
+    assert by_metric["对白第二人称密度"].direction == "hi"
+
+
+def test_dialogue_rule_limits_have_two_scales() -> None:
+    """对白判据同样是「瞄准紧、判罚松」，且三条都是「越高越差」。"""
+    judge = dialogue_rule_limits("judge")
+    prompt = dialogue_rule_limits("prompt")
+    assert judge.keys() == prompt.keys()
+    assert set(judge) == {"对白破折号占比", "对白条数每千字", "对白第二人称密度"}
+    for metric, limit in judge.items():
+        assert prompt[metric] < limit, metric
+
+
+def test_dialogue_baseline_is_declared_separately() -> None:
+    """对白基线要单独报家门：它的语料口径与节奏不同（只统计写了对白的章）。"""
+    meta = baseline_meta()
+    dialogue = meta["dialogue"]
+    assert dialogue is not None
+    assert dialogue["version"] == "style-dlg-v1"
+    assert dialogue["books"] >= 50
+    assert dialogue["holdout_chapters"] >= 1000
+    assert len(dialogue["rules"]) == 3
+    # 主表仍然是那五条节奏判据——混表会让「本基线来自 67 本 5829 章」变成假话
+    assert len(meta["rules"]) == 5

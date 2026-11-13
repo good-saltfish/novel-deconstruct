@@ -174,6 +174,7 @@ def style_card(target_chars: int = 0) -> str:
         "7. 比喻最多 3 个，且不要都取痛觉与器械（钝刀、针、冰水、磨砂玻璃、"
         "橡皮擦）——真实作者会用「像扛一根扁担」这种生活化的喻体。"
     )
+    lines.extend(_dialogue_card(budget))
     lines.append(
         "\n反例（左边是最容易写出来的那种，右边是同一个意思的人类写法）：\n"
         "- 差：他笑了一下——那种没什么温度的笑，嘴角动了，眼睛没动。\n"
@@ -184,9 +185,57 @@ def style_card(target_chars: int = 0) -> str:
         "  好：他低头把合同翻到第二页，月薪四千，试用期三个月，违约金三十万。\n"
         "- 差：他站起来，走到窗边，看着楼下的车流，心里忽然明白了什么。这座城市"
         "从来不缺努力的人，缺的是被人看见的机会。\n"
-        "  好：他站起来走到窗边，楼下的车流一动不动。「签不签？」王振在背后问。"
+        "  好：他站起来走到窗边，楼下的车流一动不动。「签不签？」王振在背后问。\n"
+        "- 差：「你一定要相信我，因为这是唯一的机会，否则我们都会被他们抓住。」\n"
+        "  好：「相信我。」他顿了一下，「没别的路了。」\n"
+        "- 差：「你是谁？」「我是来救你的。」「为什么救我？」「因为你不该死。」\n"
+        "  好：「谁？」「走。」那人拽他胳膊，「别问了。」"
     )
     return "\n".join(lines)
+
+
+def _dialogue_card(budget: int) -> list[str]:
+    """台词约束：按「每千汉字」折算成整章预算再说给模型。
+
+    为什么单独一张卡：节奏那五条只管叙述怎么排（分段、断句、破折号、身体外化），
+    对台词一句都不管。而 AI 台词的通病恰好反着：条条完整、句句在解释、大量
+    「你……」冲着读者说、还爱用破折号把解释焊在台词后面。本机 81 本 31889 章的
+    实测分布证明了这三条能把人类与 AI 分开（误杀人类 2% 左右）。
+    """
+    try:
+        from ndecon.quality.style import dialogue_rule_limits
+
+        limits = dialogue_rule_limits("prompt")
+    except Exception:  # noqa: BLE001 - 基线缺失不该毁掉整章生成
+        return []
+
+    lines: list[str] = []
+    per_k = limits.get("对白条数每千字")
+    if per_k is not None:
+        budget_lines = max(8, int(round(per_k * budget / 1000)))
+        lines.append(
+            f"8. 台词要碎：整章引号台词不超过 {budget_lines} 条（人类中位是每千字 "
+            f"{per_k:.0f} 条）。别让每个回合都写成「说完一句、对方再答一句」的完整对话。"
+        )
+    dash_ratio = limits.get("对白破折号占比")
+    if dash_ratio is not None:
+        lines.append(
+            "9. 台词里几乎不用破折号：要停顿就断开成两句，要补充就另起一句。"
+            "真实作者的台词里 75% 一句破折号都没有。"
+        )
+    pronoun = limits.get("对白第二人称密度")
+    if pronoun is not None:
+        lines.append(
+            "10. 台词不是对读者说的：别让角色反复说「你……」来解释处境。"
+            "人私下说话会省略主语、会答非所问、会说到一半被自己或别人打断。"
+        )
+    if dash_ratio is not None or pronoun is not None or per_k is not None:
+        lines.append(
+            "11. 允许台词有废话和误解：答错、听岔、说了一半被岔开、干脆不接话——"
+            "这些不是瑕疵，是人类对话的常态。每条台词都精准推进信息就是 AI 味。"
+        )
+    return lines
+
 
 
 

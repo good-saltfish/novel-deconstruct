@@ -1615,10 +1615,13 @@ un_server 传 server.jobs），不能在这里新建：
             self._send_json(200, scan_chapter(content).model_dump())
 
         def _style_chapter(self, project_id: str, order_text: str) -> None:
-            """按人类语料基线体检本章的节奏笔法；只读，不改正文一个字。
+            """按人类语料基线体检本章的节奏与对白笔法；只读，不改正文一个字。
 
             与 ``/lint`` 的分工写进响应体（``baseline`` 与 ``note``），
             否则前端两个按钮看起来是在做同一件事。
+
+            ``dialogue_checked`` 必须回给前端：这章没写对白时对白三判据压根没比，
+            界面若只显示「通过」会让人以为台词也被检查过了。
             """
             from ndecon.quality.style import baseline_meta, inspect_style
 
@@ -1639,7 +1642,10 @@ un_server 传 server.jobs），不能在这里新建：
                     "cjk_chars": report.cjk_chars,
                     "score": report.score,
                     "passed": report.passed,
+                    "rule_count": report.rule_count,
                     "metrics": report.metrics,
+                    "dialogue_checked": report.dialogue_checked,
+                    "dialogue_metrics": report.dialogue_metrics,
                     "findings": [
                         {
                             "metric": f.metric,
@@ -1654,7 +1660,7 @@ un_server 传 server.jobs），不能在这里新建：
                         for f in report.findings
                     ],
                     "baseline": baseline_meta(),
-                    "note": "节奏分布信号，不是「是不是 AI」的判定；不改正文。",
+                    "note": "节奏与对白分布信号，不是「是不是 AI」的判定；不改正文。",
                 },
             )
 
