@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     ManuscriptRecord,

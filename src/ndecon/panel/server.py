@@ -32,18 +32,6 @@ from ndecon.creation.candidates import (
 )
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
 from ndecon.creation.jobs import JOB_INTERRUPTED, JOB_RUNNING, JobRegistry, job_status
-from ndecon.creation.models import (
-    CHAPTER_ORDER_MAX,
-    Beat,
-    ChapterBeatPlan,
-    ChapterOutline,
-    GoldenFingerSpec,
-    ManuscriptRecord,
-    Positioning,
-    ProtagonistProfile,
-    SettingEntry,
-    VolumeOutline,
-)
 from ndecon.creation.plan_providers import (
     FakeOutlinePlanner,
     FakeSettingPlanner,
@@ -56,6 +44,18 @@ from ndecon.creation.runlog import RunLog
 from ndecon.creation.summarize import backfill_summaries, content_hash, summarize_chapter
 from ndecon.creation.txn import MAX_REPAIR_ATTEMPTS, run_chapter
 from ndecon.deconstruct.pipeline import build_rule_deconstruction
+from ndecon.domain.creation import (
+    CHAPTER_ORDER_MAX,
+    Beat,
+    ChapterBeatPlan,
+    ChapterOutline,
+    GoldenFingerSpec,
+    ManuscriptRecord,
+    Positioning,
+    ProtagonistProfile,
+    SettingEntry,
+    VolumeOutline,
+)
 from ndecon.domain.models import ChapterSummary
 from ndecon.kb.corpus import search_knowledge
 from ndecon.llm.catalog import catalog_payload

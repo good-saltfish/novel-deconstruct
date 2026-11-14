@@ -9,7 +9,6 @@
 import pytest
 
 from ndecon.deconstruct import quotes as quote_audit
-from ndecon.deconstruct.models import MAX_QUOTE_CHARS, PLACEHOLDER
 from ndecon.deconstruct.pipeline import (
     RULE_MODEL_ID,
     build_rule_deconstruction,
@@ -18,6 +17,7 @@ from ndecon.deconstruct.pipeline import (
 )
 from ndecon.deconstruct.renderers import render_author_md, render_kb_md
 from ndecon.deconstruct.signals import has_dialogue, split_sentences
+from ndecon.domain.deconstruction import MAX_QUOTE_CHARS, PLACEHOLDER
 
 SAMPLE = (
     "第1章 深夜来电\n"
@@ -229,7 +229,7 @@ def test_audit_pins_locatable_short_quote():
 
 def test_triangles_per_chapter_is_bounded():
     """一章最多 7 个三角：模型偶尔吐十几个碎三角，那种产物不可用。"""
-    from ndecon.deconstruct.models import ChapterDeconstruction
+    from ndecon.domain.deconstruction import ChapterDeconstruction
 
     triangle = {"kind": "悬念", "name": "x", "persecutor": "甲", "victim": "乙"}
     ChapterDeconstruction(order=1, title="第1章", triangles=[dict(triangle) for _ in range(7)])
@@ -264,7 +264,7 @@ def test_sentence_length_distribution_separates_short_and_long():
 
 def test_book_structure_aggregates_sentence_length_by_sentence_count():
     """全书句长分布要按句数计权：短章不能和主线章等权，否则中位数不是这本书的。"""
-    from ndecon.deconstruct.models import ChapterMetrics
+    from ndecon.domain.deconstruction import ChapterMetrics
 
     def _metrics(order: int, sentences: int, median: float, short: float, long: float):
         return ChapterMetrics(
@@ -340,7 +340,7 @@ def test_metrics_keep_closing_hook_separate_from_opening():
 
 def _book_with_hooks(hooks: dict[int, str], cores: dict[int, str]) -> object:
     """造一本规则层产物并手填语义层字段（钩子台账只读这两处）。"""
-    from ndecon.deconstruct.models import ChapterDeconstruction
+    from ndecon.domain.deconstruction import ChapterDeconstruction
 
     book = build_rule_deconstruction(SAMPLE, "样本")
     chapters = [

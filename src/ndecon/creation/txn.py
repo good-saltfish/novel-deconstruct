@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ndecon.creation.chapters import FakeChapterWriter, OpenAICompatChapterWriter
-from ndecon.creation.models import ChapterSelfReview, ManuscriptRecord
 from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id, now_iso
 from ndecon.creation.summarize import content_hash, mechanical_summary, summarize_chapter
+from ndecon.domain.creation import ChapterSelfReview, ManuscriptRecord
 from ndecon.domain.models import ChapterSummary
 from ndecon.quality.fingerprint import scan_chapter
 from ndecon.quality.gates import (

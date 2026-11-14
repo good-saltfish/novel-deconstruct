@@ -14,8 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from ndecon.creation.models import CreationDraft, ManuscriptRecord, SettingEntry
-from ndecon.deconstruct.models import BookDeconstruction
+from ndecon.domain.creation import CreationDraft, ManuscriptRecord, SettingEntry
+from ndecon.domain.deconstruction import BookDeconstruction
 from ndecon.domain.models import Aggregation
 
 ProjectKind = Literal["reference", "creation"]

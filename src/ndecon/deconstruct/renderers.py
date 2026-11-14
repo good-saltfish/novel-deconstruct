@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from ndecon.deconstruct.models import BookDeconstruction, BookStructure, ChapterMetrics
+from ndecon.domain.deconstruction import BookDeconstruction, BookStructure, ChapterMetrics
 
 
 def _fmt(value: float, digits: int = 2) -> str:

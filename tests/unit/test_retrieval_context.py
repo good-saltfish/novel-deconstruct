@@ -1,6 +1,6 @@
 """上下文包测试：字段门控、前章摘要来源、本章排除、伏笔注入、非法输入。"""
 
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

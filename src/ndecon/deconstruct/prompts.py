@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from ndecon.deconstruct.models import MAX_QUOTE_CHARS
+from ndecon.domain.deconstruction import MAX_QUOTE_CHARS
 
 PROMPT_VERSION = "bd-p-v1"
 

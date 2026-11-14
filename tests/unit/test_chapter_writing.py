@@ -9,7 +9,7 @@ from ndecon.creation.chapters import (
     chapter_user_message,
     context_brief,
 )
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 
-from ndecon.deconstruct.models import MAX_QUOTE_CHARS
+from ndecon.domain.deconstruction import MAX_QUOTE_CHARS
 
 SETTING_PROMPT_VERSION = "cr-s-v0"
 OUTLINE_PROMPT_VERSION = "cr-o-v0"

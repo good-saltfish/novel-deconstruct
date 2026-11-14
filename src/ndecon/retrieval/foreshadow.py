@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from ndecon.creation.models import ChapterOutline
+from ndecon.domain.creation import ChapterOutline
 from ndecon.domain.models import ChapterSummary
 from ndecon.retrieval.tokenize import tokenize
 

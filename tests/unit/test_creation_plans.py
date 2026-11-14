@@ -10,7 +10,6 @@
 import pytest
 
 from ndecon.creation import plans
-from ndecon.creation.models import SettingEntry
 from ndecon.creation.plan_providers import (
     MAX_BEATS_PER_CHAPTER,
     MIN_BEATS_PER_CHAPTER,
@@ -20,7 +19,8 @@ from ndecon.creation.plan_providers import (
     _outline_plan_from_dict,
     _setting_plan_from_dict,
 )
-from ndecon.deconstruct.models import MAX_QUOTE_CHARS
+from ndecon.domain.creation import SettingEntry
+from ndecon.domain.deconstruction import MAX_QUOTE_CHARS
 
 SNIPPET = [
     {

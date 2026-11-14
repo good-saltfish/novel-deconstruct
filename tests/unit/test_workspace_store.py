@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     CHAPTER_ORDER_MAX,
     CreationDraft,
     GoldenFingerSpec,

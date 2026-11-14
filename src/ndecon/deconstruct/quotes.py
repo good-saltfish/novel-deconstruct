@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from ndecon.deconstruct.models import (
+from ndecon.domain.deconstruction import (
     MAX_QUOTE_CHARS,
     PLACEHOLDER,
     ConflictAnchor,

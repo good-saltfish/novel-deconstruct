@@ -15,7 +15,7 @@ import random
 import re
 from typing import Protocol
 
-from ndecon.creation.models import ChapterSelfReview, ChapterWriting
+from ndecon.domain.creation import ChapterSelfReview, ChapterWriting
 from ndecon.providers.errors import ProviderResponseError
 from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band

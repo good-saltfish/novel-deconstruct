@@ -33,7 +33,6 @@ from ndecon.creation.chapters import (
     FakeChapterWriter,
     OpenAICompatChapterWriter,
 )
-from ndecon.creation.models import ChapterSelfReview, ManuscriptRecord
 from ndecon.creation.summarize import (
     content_hash,
     mechanical_summary,
@@ -46,6 +45,7 @@ from ndecon.creation.txn import (
     _recent_texts,
     _target_chars,
 )
+from ndecon.domain.creation import ChapterSelfReview, ManuscriptRecord
 from ndecon.providers.errors import ProviderError
 from ndecon.quality.gates import PLACEHOLDER_BANNER, check_chapter
 from ndecon.retrieval.context import build_context_pack

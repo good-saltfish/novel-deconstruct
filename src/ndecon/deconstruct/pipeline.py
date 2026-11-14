@@ -18,7 +18,8 @@ import os
 import re
 from pathlib import Path
 
-from ndecon.deconstruct.models import (
+from ndecon.deconstruct.renderers import render_author_md, render_kb_md
+from ndecon.domain.deconstruction import (
     BookDeconstruction,
     BookStructure,
     ChapterDeconstruction,
@@ -26,7 +27,6 @@ from ndecon.deconstruct.models import (
     ConflictAnchor,
     HookLedgerEntry,
 )
-from ndecon.deconstruct.renderers import render_author_md, render_kb_md
 
 RULE_MODEL_ID = "rule:deconstruct"
 RULE_PROMPT_VERSION = "rule-v0"
@@ -343,7 +343,7 @@ def build_rule_deconstruction(
     max_chapters: int = 0,
 ) -> BookDeconstruction:
     """规则层入口：切分 → 逐章测量 → 聚合。**给了几章就量几章，不静默截断。**"""
-    from ndecon.deconstruct.models import PLACEHOLDER
+    from ndecon.domain.deconstruction import PLACEHOLDER
     from ndecon.ingest.splitter import split_chapters
 
     split = split_chapters(text)
@@ -407,8 +407,8 @@ def attach_semantics(
 
     chapter_texts 由调用方按章号给出原文切片（本模块不重新持有全本正文）。
     """
-    from ndecon.deconstruct.models import PLACEHOLDER
     from ndecon.deconstruct.semantics import DeconstructionError
+    from ndecon.domain.deconstruction import PLACEHOLDER
 
     targets = book.chapters
     if semantic_chapters and len(targets) > semantic_chapters:

@@ -18,7 +18,7 @@ from ndecon.agent.models import AgentDrafts
 from ndecon.agent.tools import SearchOwnBook, ToolContext
 from ndecon.creation import plans as creation_plans
 from ndecon.creation import prompts as creation_prompts
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

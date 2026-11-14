@@ -1,6 +1,6 @@
 """伏笔台账测试：只登记显式钩子、阈值回收、取最早章、不臆造、开放集合正确。"""
 
-from ndecon.creation.models import ChapterOutline
+from ndecon.domain.creation import ChapterOutline
 from ndecon.retrieval.foreshadow import (
     RESOLVE_THRESHOLD,
     extract_foreshadows,

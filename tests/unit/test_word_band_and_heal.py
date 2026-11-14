@@ -41,7 +41,7 @@ def test_word_band_default_target() -> None:
 def test_prompt_and_gate_use_same_band() -> None:
     """prompt 里写的区间必须与闸门真正判的区间逐字一致。"""
     from ndecon.creation.chapters import context_brief
-    from ndecon.creation.models import ChapterOutline
+    from ndecon.domain.creation import ChapterOutline
     from ndecon.retrieval.context import ContextPack
 
     pack = ContextPack(

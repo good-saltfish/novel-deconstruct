@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-SCHEMA_VERSION = "bd-v1"
+# 拆书产物的 schema 版本。**刻意不叫 SCHEMA_VERSION**：包根 `ndecon.SCHEMA_VERSION`
+# 是 "v0"（拆书管道整体口径），两者同名不同值时，`from ndecon import SCHEMA_VERSION`
+# 与本模块的常量会在同一个文件里撞车，读代码的人也分不清哪个是哪个。
+DECONSTRUCTION_SCHEMA_VERSION = "bd-v1"
 # 语义层里允许出现的连续原文长度上限（字符）：调研实测合法短引 33-67 字，这里收紧到 30
 MAX_QUOTE_CHARS = 30
 # 文案类字段（编号为锚点的手法提示）的硬截断长度
@@ -262,5 +265,5 @@ class BookDeconstruction(BaseModel):
     flagged_chapters: list[int] = Field(default_factory=list)
     model_id: str = Field(min_length=1, description="产出方；规则产物用 rule:<name>")
     prompt_version: str = Field(min_length=1)
-    schema_version: str = Field(default=SCHEMA_VERSION, min_length=1)
+    schema_version: str = Field(default=DECONSTRUCTION_SCHEMA_VERSION, min_length=1)
     warnings: list[str] = Field(default_factory=list, description="非致命问题，供使用者知悉")

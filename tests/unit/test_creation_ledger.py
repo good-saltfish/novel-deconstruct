@@ -6,7 +6,7 @@ from ndecon.creation.ledger import (
     build_scaffold,
     write_scaffold,
 )
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     ProtagonistProfile,

@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ndecon.cli import app
-from ndecon.creation.models import CreationDraft, Positioning
+from ndecon.domain.creation import CreationDraft, Positioning
 from ndecon.workspace.models import CreationProject, ProjectMeta, ReferenceProject
 from ndecon.workspace.store import WorkspaceStore
 

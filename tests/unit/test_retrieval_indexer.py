@@ -1,6 +1,6 @@
 """索引器测试：确认态门控、参考书类型闸门、原文 quote 永不入索引。"""
 
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

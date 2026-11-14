@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ndecon.creation import plans
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     BEAT_ORDER_MAX,
     CHAPTER_ORDER_MAX,
     Beat,

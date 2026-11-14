@@ -8,7 +8,7 @@ from ndecon.agent.models import Beat, SettingEntry
 from ndecon.agent.planners import FakePlanner
 from ndecon.agent.runner import run_planner
 from ndecon.agent.tools import READ_ONLY_TOOLS, TOOL_REGISTRY, execute_tool, tool_catalog_text
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

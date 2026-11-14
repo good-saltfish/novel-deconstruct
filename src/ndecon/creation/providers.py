@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ndecon.creation import prompts
-from ndecon.creation.models import (
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,

@@ -17,14 +17,14 @@ import pytest
 
 from ndecon.creation import txn
 from ndecon.creation.chapters import FakeChapterWriter
-from ndecon.creation.models import (
+from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id
+from ndecon.domain.creation import (
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,
     Positioning,
     ProtagonistProfile,
 )
-from ndecon.creation.runlog import ChapterRun, RunLog, new_run_id
 from ndecon.quality.gates import PLACEHOLDER_BANNER, check_chapter
 from ndecon.workspace.models import CreationProject, ProjectMeta
 from ndecon.workspace.store import WorkspaceStore
@@ -143,7 +143,7 @@ class _GoodWriter(FakeChapterWriter):
 
     def write_chapter(self, pack):  # noqa: ANN001
         self.calls += 1
-        from ndecon.creation.models import ChapterSelfReview, ChapterWriting
+        from ndecon.domain.creation import ChapterSelfReview, ChapterWriting
 
         return ChapterWriting(
             content=self._body(pack.chapter_order),
@@ -508,7 +508,7 @@ class _SelfReviewWriter(_GoodWriter):
         self.packs: list[list[str]] = []
 
     def write_chapter(self, pack):  # noqa: ANN001
-        from ndecon.creation.models import ChapterSelfReview, ChapterWriting
+        from ndecon.domain.creation import ChapterSelfReview, ChapterWriting
 
         self.packs.append(list(pack.repair_feedback))
         index = min(len(self.packs) - 1, len(self._reviews) - 1)

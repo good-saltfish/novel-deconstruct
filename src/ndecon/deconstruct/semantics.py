@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from ndecon.deconstruct import prompts
 from ndecon.deconstruct import quotes as quote_audit
-from ndecon.deconstruct.models import (
+from ndecon.domain.deconstruction import (
     MAX_QUOTE_CHARS,
     ChapterDeconstruction,
     PanoramaDeconstruction,

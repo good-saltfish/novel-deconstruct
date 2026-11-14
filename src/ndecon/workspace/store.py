@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ndecon.creation.models import CHAPTER_ORDER_MAX
+from ndecon.domain.creation import CHAPTER_ORDER_MAX
 from ndecon.retrieval.bm25 import BM25Index
 from ndecon.workspace.atomic import (
     atomic_write_json,

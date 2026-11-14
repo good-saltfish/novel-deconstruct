@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ndecon.creation.models import Beat, SettingEntry  # noqa: F401  再导出，工具层统一引用
+from ndecon.domain.creation import Beat, SettingEntry  # noqa: F401  再导出，工具层统一引用
 
 AGENT_PROMPT_VERSION = "ag-v0"
 
