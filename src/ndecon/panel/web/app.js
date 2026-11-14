@@ -290,30 +290,36 @@ async function savePart(projectId, part, content) {
 function renderReference(p) {
   detail.innerHTML = "";
   const h = document.createElement("div");
-  const agg = p.aggregation;
-  const themes = Object.entries(agg?.theme_distribution || {})
-    .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
-    .join("");
-  const chars = (agg?.characters || [])
-    .slice(0, 12)
-    .map(
-      (c) =>
-        `<tr><td>${c.name}</td><td>${c.mention_count}</td><td>${c.chapter_orders.join("、")}</td></tr>`
-    )
-    .join("");
+  const st = p.deconstruction?.structure;
+  // 旧分析管道的「主题分布 / 爽点章距」已退役（2026-11-14）：那批数字只写不读，
+  // 创作侧真正消费的是结构剖面（节奏实测 + 钩子回收节拍），所以这里也只展示它。
+  const num = (v, digits = 1, unit = "") =>
+    v === null || v === undefined ? "—" : `${Number(v).toFixed(digits)}${unit}`;
+  const orders = (list) =>
+    Array.isArray(list) && list.length ? list.slice(0, 20).join("、") : "—";
+  const structureCard = st
+    ? `<div class="card"><h4>结构剖面</h4>
+      全书 ${st.total_chars} 字 · 均章 ${num(st.avg_chapter_chars, 0)} 字<br/>
+      句均 ${num(st.avg_sentence_chars, 1)} 字 · 中位句 ${num(st.median_sentence_chars, 1)} 字
+      · 短句占比 ${num(st.short_sentence_ratio * 100, 1, "%")}
+      · 长句占比 ${num(st.long_sentence_ratio * 100, 1, "%")}<br/>
+      对白句占比 ${num(st.avg_dialogue_ratio * 100, 1, "%")}
+      · 每千字冲突点 ${num(st.per_thousand_conflicts, 2)}
+    </div>
+    <div class="card"><h4>钩子节拍</h4>
+      开篇有悬念的章：${orders(st.hook_openings)}<br/>
+      章尾有钩子的章：${orders(st.closing_hook_openings)}<br/>
+      回收间隔中位 ${num(st.hook_recovery_median, 1, " 章")}
+      · 最长 ${num(st.hook_recovery_longest, 0, " 章")}
+      · 全书未回收 ${num(st.hook_open_count, 0, " 个")}<br/>
+      节奏偏静的章：${orders(st.quiet_chapters)}
+    </div>`
+    : `<div class="card"><h4>结构剖面</h4>这本书还没有结构拆解（导入时规则层拆书未跑成）。</div>`;
   h.innerHTML = `
     <h3 class="proj-title">${p.meta.title}</h3>
     <div class="proj-meta">参考书 · ${p.chapter_count} 章 · ${p.total_plot_points} 个情节点
       · 源路径 <code>${p.source_path}</code></div>
-    <div class="card"><h4>爽点节奏</h4>
-      含爽点章节：${agg?.pacing.satisfying_chapters.join("、") || "—"}<br/>
-      相邻章距：${agg?.pacing.gaps.join("、") || "—"} ·
-      平均：${agg?.pacing.average_gap ?? "—"} · 最大空窗：${agg?.pacing.longest_gap ?? "—"}
-    </div>
-    <div class="card"><h4>主题分布</h4><table class="stats"><tr><th>主题</th><th>次数</th></tr>${themes}</table></div>
-    <div class="card"><h4>角色出场矩阵（前 12）</h4>
-      <table class="stats"><tr><th>角色</th><th>提及</th><th>章号</th></tr>${chars}</table></div>
+    ${structureCard}
     <button class="btn danger small" id="del">删除该项目</button>`;
   h.querySelector("#del").onclick = async () => {
     if (!confirm("确定删除该参考书项目？只删分析记录，不影响源文件。")) return;

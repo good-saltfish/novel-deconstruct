@@ -4,8 +4,7 @@
 1. 传输可注入（httpx.BaseTransport），测试用 MockTransport 零网络；
 2. 模型只产出 quote 文本，字符偏移由本地 locate_quote 锚定——模型永远不提供偏移；
 3. quote 无法唯一定位的情节点被丢弃并计入诊断，绝不伪造证据；
-4. 受控词表由 pydantic 枚举强制，非法响应整体判失败（ProviderSchemaError），不写脏数据；
-5. 学习层 takeaways 在本层根本不读取模型返回，物理上无法被代笔。
+4. 受控词表由 pydantic 枚举强制，非法响应整体判失败（ProviderSchemaError），不写脏数据。
 """
 
 from __future__ import annotations
@@ -22,10 +21,8 @@ from pydantic import ValidationError
 from ndecon.domain.ids import chapter_id
 from ndecon.domain.models import (
     ChapterSummary,
-    GoldenChapterReport,
     PlotPoint,
     SourceRef,
-    StructureBeat,
 )
 from ndecon.providers import prompts
 from ndecon.providers.errors import (
@@ -454,7 +451,7 @@ class OpenAICompatProvider:
             content_hash=chapter_hash,
         )
 
-    # ---------- Provider 协议 ----------
+    # ---------- 摘要协议 ----------
 
     def thin_summary(self, first_chapter_text: str, book_title: str) -> str:
         """请求 100-200 字 thin 概要并校验非空。"""
@@ -533,49 +530,3 @@ class OpenAICompatProvider:
             plot_points=points,
             characters=[str(c) for c in data.get("characters", [])],
         )
-
-    def golden_report(
-        self, order: int, title: str, chapter_text: str, chapter_hash: str
-    ) -> GoldenChapterReport:
-        """请求黄金三章报告；可选 quote 定位失败时置空并计数，不丢弃整份报告。"""
-        data = self._chat_json(
-            [
-                {"role": "system", "content": prompts.SYSTEM_MESSAGE},
-                {
-                    "role": "user",
-                    "content": prompts.golden_user_message(order, title, chapter_text),
-                },
-            ]
-        )
-        opening_ref = self._anchor(
-            order, str(data.get("opening_quote", "")), chapter_text, chapter_hash
-        )
-        cliff_ref = self._anchor(
-            order, str(data.get("cliffhanger_quote", "")), chapter_text, chapter_hash
-        )
-        if opening_ref is None and str(data.get("opening_quote", "")).strip():
-            self.diagnostics.empty_optional_quotes += 1
-        if cliff_ref is None and str(data.get("cliffhanger_quote", "")).strip():
-            self.diagnostics.empty_optional_quotes += 1
-
-        try:
-            beats = [
-                StructureBeat(name=str(b["name"]), note=str(b["note"]))
-                for b in data.get("structure_beats", [])
-            ]
-            report = GoldenChapterReport(
-                model_id=f"{self.name}:{self.model}",
-                prompt_version=self.prompt_version,
-                chapter_id=chapter_id(order),
-                order=order,
-                title=title,
-                opening_hook_quote=opening_ref.quote if opening_ref else "",
-                opening_hook_note=str(data["opening_hook_note"]),
-                worldview_revealed=[str(w) for w in data.get("worldview_revealed", [])],
-                structure_beats=beats,
-                cliffhanger_quote=cliff_ref.quote if cliff_ref else "",
-                takeaways=[],  # 物理红线：不读取模型是否返回该字段，强制空
-            )
-        except (ValidationError, KeyError, TypeError) as exc:
-            raise ProviderSchemaError(f"{chapter_id(order)}：黄金三章报告字段不合法：{exc}") from exc
-        return report

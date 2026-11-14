@@ -36,8 +36,10 @@ def test_full_loop_import_generate_edit_delete(server) -> None:
     assert status == 201
     ref_id = ref["meta"]["id"]
     assert ref["chapter_count"] == 4
-    assert ref["total_plot_points"] > 0
-    assert ref["aggregation"] is not None
+    # 情节点只有旧分析管道会产出，管道退役后新导入一律 0（字段保留为兼容旧工作区）
+    assert ref["total_plot_points"] == 0
+    assert ref["deconstruction"] is not None
+    assert ref["deconstruction"]["structure"]["total_chars"] > 0
 
     # 2) 新建创作项目并关联参考书
     status, cre = api_request(
@@ -144,32 +146,26 @@ def test_reference_structure_reaches_creation_plans_without_narrative(server, tm
         assert status == 200, payload
 
 
-def test_reference_stats_tolerates_reference_without_aggregation(server) -> None:
-    """只有拆书产物、没有旧聚合数据的参考项目也必须能被算作有效参考。"""
-    from ndecon.deconstruct.pipeline import build_rule_deconstruction
+def test_reference_stats_requires_deconstruction(server) -> None:
+    """参考书没有拆书产物时不算有效参考（旧聚合字段已退役，不再作为兜底依据）。"""
     from ndecon.panel.server import _reference_stats
     from ndecon.workspace.models import ProjectMeta, ReferenceProject
 
-    text = FIXTURE.read_text(encoding="utf-8")
     store = server.workspace_store
-    project_id = store.allocate_project_id("reference", "只有拆书的参考")
+    project_id = store.allocate_project_id("reference", "什么都没有的参考")
     store.save_reference(
         ReferenceProject(
             meta=ProjectMeta(
-                id=project_id, kind="reference", title="只有拆书的参考", created_at=store.now_iso()
+                id=project_id, kind="reference", title="什么都没有的参考", created_at=store.now_iso()
             ),
             source_path=str(FIXTURE),
-            chapter_count=0,
+            chapter_count=4,
             total_plot_points=0,
-            aggregation=None,
-            deconstruction=build_rule_deconstruction(text, "只有拆书的参考"),
+            deconstruction=None,
         )
     )
 
-    stats = _reference_stats(store, [project_id])
-    assert len(stats) == 1
-    assert "themes" not in stats[0], "没有 aggregation 就不该凭空造主题分布"
-    assert stats[0]["structure"]["avg_sentence_chars"] > 0
+    assert _reference_stats(store, [project_id]) == []
 
 
 def test_import_missing_file_400(server) -> None:

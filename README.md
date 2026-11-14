@@ -4,18 +4,20 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](#)
 
-本地优先的**中文网文拆书 CLI**：喂给它一本小说的文本文件，它自动完成章节切分、逐章结构化摘要与黄金三章拆解，产出人读的 Markdown 与机读的 JSONL。模型可插拔——没有 API key 时用内置确定性 Fake Provider 也能跑通整条管道与测试。
+本地优先的**中文网文拆书 + 创作引擎**：喂给它一本小说的文本文件，它把书拆成可迁移的零部件（章节切分、句长与对话占比等客观测量、可选语义层），产出人读的 Markdown 与机读的 JSONL；再把这些结构数字接进新书的骨架与正文生成。模型可插拔——没有 API key 时用内置确定性规则层也能跑通整条链路。
 
-> 状态：v0.1 开发中。v0.1 只覆盖"章节切分 + Stage 0 索引 + Stage 2 逐章摘要 + Stage 1 黄金三章报告"；跨章聚合、设定关系、文风分析在 backlog。
+> 状态：v0.3 开发中。旧的分析管道（`split` / `analyze` 两个命令、跨章聚合 `aggregation`）已于 2026-11-14 退役：它只写不读，创作侧真正消费的是新规则层的 `structure`。现在拆书只剩一条路——`deconstruct`。
 
 ## 为什么做它
 
 拆书是网文作者最重要的学习手段，但手工拆一本长篇以小时计。本项目把拆书流程中**确定性高、可结构化**的部分工程化：
 
 - 章节边界由纯代码切分（绝不让 LLM 决定边界，保证可复现）；
-- LLM 只负责语义摘要，输出受受控词表与证据字段约束；
-- 每条情节点都带章节内字符偏移与原文 quote，可回原文定位；
-- 所有产物双写：JSONL 是落盘真源，Markdown 可随时重建。
+- 结构数字（句长、对话占比、段落分布、钩子回收节拍）由规则层直接量出来，毫秒级、零 token、可重算；
+- 需要语义时才调 LLM，输出受受控词表与证据字段约束；
+- 每条引文都带章节内字符偏移与 content_hash，可回原文定位。
+
+拆出来的东西不落在报告里吃灰：创作侧只取 `structure` 的纯数字字段接进笔法卡与细纲，**不搬运任何转述文本**（版权纪律，见「隐私与版权」）。
 
 ## 隐私与版权
 
@@ -35,24 +37,21 @@ D:\Python\Python310\python.exe -m pytest
 ## 快速开始
 
 ```powershell
-# 1) 只切章节（纯本地，不需要模型）
-ndecon split 我的小说.txt --out .out/mybook
+# 1) 结构拆书（纯本地，不需要模型）：章节切分 + 客观测量
+ndecon deconstruct 我的小说.txt --out .out/mybook
 
-# 2) 完整拆解（v0.1 用内置 Fake，离线可跑）
-ndecon analyze 我的小说.txt --out .out/mybook --provider fake
-
-# 3) 真实语义拆解（OpenAI 兼容接口，使用你自己的 key）
+# 2) 加上语义层（OpenAI 兼容接口，使用你自己的 key）
 #    base_url 默认 https://api.openai.com/v1，可指向任何兼容端点
 setx NOVEL_DECON_API_KEY "sk-..."          # 或 OPENAI_API_KEY
-ndecon analyze 我的小说.txt --out .out/mybook --provider openai-compat --model gpt-4o-mini
+ndecon deconstruct 我的小说.txt --out .out/mybook --provider openai-compat --model gpt-4o-mini
 
-# 4) 本地创作面板（浏览器工作台：导入小说自动拆书 → 生成新长篇骨架）
+# 3) 本地创作面板（浏览器工作台：导入小说自动拆书 → 生成新长篇骨架）
 ndecon panel --workspace .ndecon-workspace --open
 
-# 5) 为创作项目重建 L1 一致性检索索引（中文 bigram BM25，纯本地离线，ADR-0004）
+# 4) 为创作项目重建 L1 一致性检索索引（中文 bigram BM25，纯本地离线，ADR-0004）
 ndecon reindex creation-mybook-1 --workspace .ndecon-workspace
 
-# 6) 把本地写作资料库建成学习型知识库（L0.5，ADR-0005；版权小说全文自动硬排除）
+# 5) 把本地写作资料库建成学习型知识库（L0.5，ADR-0005；版权小说全文自动硬排除）
 ndecon kb index --root "D:\novel-project\网文写作" --workspace .ndecon-workspace
 ndecon kb search "卡普曼三角 期待感" --workspace .ndecon-workspace
 #    也可用环境变量指定资料库：setx NOVEL_DECON_KB_ROOTS "D:\path1;D:\path2"
@@ -98,17 +97,13 @@ key 只保存在**本次面板进程内存**中（不落盘、不进项目文件
 
 ```
 .out/mybook/
-├── 概要.md                # 章节索引与全书概要
-├── 章节/
-│   ├── 第0001章_摘要.md       # 逐章结构化摘要
-│   └── 第0001章_深度拆解.md   # 黄金三章报告（仅前 3 章）
-├── 剧情/
-│   └── 节奏.md            # Stage 3：基调曲线/爽点章距/主题分布/角色矩阵
-└── data/
-    ├── chapters.jsonl     # 机读真源：每章一行
-    ├── reports.jsonl      # 黄金三章结构化报告
-    └── aggregation.jsonl  # 跨章确定性统计（可从 chapters.jsonl 重算）
+├── 我的小说_拆解稿.md    # 作者版：含复核坐标（可回原文逐条核对）
+├── 我的小说_KB.md        # 知识库版：只有数值与手法，是唯一会被 kb index 收录的文件
+└── 我的小说_data.json    # 机器真源：可 load_deconstruction 还原重放
 ```
+
+两份 markdown 刻意分开：作者版是给人核对证据的，KB 版是给 prompt 用的。
+混在一起就等于把「可复核坐标」和「可注入内容」混成一锅，版权纪律也就守不住了。
 
 ## 设计纪律
 
@@ -116,6 +111,9 @@ key 只保存在**本次面板进程内存**中（不落盘、不进项目文件
 2. **候选不代笔**：拆书产物是"记录层"候选，"为什么有效/可迁移技巧"留给使用者自己写。
 3. **证据可追溯**：quote + 字符偏移 + content_hash，程序可验证 quote 在同 hash 原文中的位置。
 4. **可重放**：每条产物带 provider / prompt_version / schema_version。
+5. **判据要有分布**：文风判据的阈值一律来自人类语料分位数，并用**没参与定阈值的留出集**报误杀率。
+   没有分布的判据（自己给自己打的分、拍脑袋定的线）不算判据，只能当提示。
+6. **退役不删证据**：删掉的功能在 CHANGELOG 里写清"为什么它曾是错的"，不悄悄消失。
 
 ## 参与开发与工程流程
 

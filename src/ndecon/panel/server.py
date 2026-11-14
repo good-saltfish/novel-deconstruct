@@ -66,9 +66,7 @@ from ndecon.llm.session import (
     test_connection,
     validate_config_payload,
 )
-from ndecon.pipeline.runner import run_analyze
 from ndecon.providers.errors import ProviderError
-from ndecon.providers.fake import FakeProvider
 from ndecon.quality.fingerprint import scan_chapter
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.atomic import read_text_with_retry
@@ -186,16 +184,12 @@ def _reference_stats(store: WorkspaceStore, reference_ids: list[str]) -> list[di
             continue
         if not isinstance(project, ReferenceProject):
             continue
-        if project.aggregation is None and project.deconstruction is None:
+        if project.deconstruction is None:
             continue
         entry: dict = {
             "title": project.meta.title,
             "chapters": project.chapter_count,
         }
-        if project.aggregation is not None:
-            agg = project.aggregation
-            entry["themes"] = agg.theme_distribution
-            entry["pacing"] = agg.pacing.model_dump()
         # 结构化拆书的结构剖面：节奏实测数字与钩子回收节拍。
         # 只送 structure（纯数字），不送 chapters/panorama 里的任何转述文本——
         # 那条纪律由"这里只挑 structure"这个写法本身保证，不是靠自觉。
@@ -642,7 +636,7 @@ un_server 传 server.jobs），不能在这里新建：
                 self._error(404, "项目不存在")
 
         def _import_reference(self, payload: dict) -> None:
-            """导入小说：跑离线 Fake 拆书管道并入库（不复制原文）。
+            """导入小说：跑规则层拆书并入库（不复制原文）。
 
             错误文案里只回文件名，不回完整路径。原实现把用户给的 `file_path`
             与底层 `OSError` 的原文一起回显——`OSError` 的 str 里带着解析后的
@@ -655,34 +649,30 @@ un_server 传 server.jobs），不能在这里新建：
                 shown = _display_name(source) or "（未提供路径）"
                 self._error(400, f"源文件不存在：{shown}")
                 return
+            title = name or _display_stem(source) or "未命名"
             try:
                 text = source_path.read_text(encoding="utf-8")
-                bundle = run_analyze(text, name or _display_stem(source) or "未命名", FakeProvider())
             except (OSError, UnicodeDecodeError) as exc:
                 self._error(400, f"读取源文件失败：{type(exc).__name__}")
                 return
+            try:
+                deconstruction = build_rule_deconstruction(
+                    text, title, source_path=str(source_path.resolve())
+                )
             except ValueError as exc:
                 self._error(400, f"拆书失败：{exc}")
                 return
-            project_id = store.allocate_project_id("reference", name or _display_stem(source) or "未命名")
-            # 顺手跑规则层拆书（纯 regex + 计数，毫秒级、零 token）：
-            # 不跑这一步，创作侧拿到的参考书就只有"主题分布 + 爽点章距"两个数字，
-            # 节奏与钩子节拍这类真正能迁移的结构信息全部丢失。
-            # 失败不阻断导入——旧分析管道的结果仍然是有用的，缺结构只是信息更少。
-            deconstruction = None
-            with contextlib.suppress(ValueError):
-                deconstruction = build_rule_deconstruction(
-                    text, bundle.book_title, source_path=str(source_path.resolve())
-                )
+            project_id = store.allocate_project_id("reference", title)
             project = ReferenceProject(
                 meta=ProjectMeta(
-                    id=project_id, kind="reference", title=bundle.book_title,
+                    id=project_id, kind="reference", title=deconstruction.book_title,
                     created_at=store.now_iso(),
                 ),
                 source_path=str(source_path.resolve()),
-                chapter_count=len(bundle.entries),
-                total_plot_points=sum(len(s.plot_points) for s in bundle.summaries),
-                aggregation=bundle.aggregation,
+                chapter_count=len(deconstruction.chapters),
+                # 情节点只有旧分析管道（已退役）会产出；规则层拆书不造情节点。
+                # 字段保留是为了旧工作区还能读，新导入一律 0——不编造没测过的东西。
+                total_plot_points=0,
                 deconstruction=deconstruction,
             )
             store.save_reference(project)

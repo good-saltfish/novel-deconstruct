@@ -58,28 +58,6 @@ def chapter_user_message(order: int, title: str, chapter_text: str) -> str:
     )
 
 
-def golden_user_message(order: int, title: str, chapter_text: str) -> str:
-    """组装黄金三章报告的用户消息（记录层事实，不产出学习层结论）。"""
-    return (
-        f"请对第{order}章《{title}》做开篇级结构拆解。\n"
-        "输出 JSON 结构：\n"
-        + json.dumps(
-            {
-                "opening_hook_note": "本章开篇钩子手法的事实性描述（不超过60字，只描述手法本身）",
-                "opening_quote": "开篇钩子对应的原文逐字摘录（10-25字）",
-                "worldview_revealed": ["本章明确透露的世界观信息，每条一句话"],
-                "structure_beats": [
-                    {"name": "段落名（4-10字）", "note": "该段叙事功能与内容（不超过40字）"}
-                ],
-                "cliffhanger_quote": "章尾钩子对应的原文逐字摘录（10-25字，无则留空字符串）",
-            },
-            ensure_ascii=False,
-        )
-        + "\n禁止输出'可借鉴要素''为什么好'等评价性内容。\n\n"
-        f"章节原文如下：\n{chapter_text}"
-    )
-
-
 def thin_summary_user_message(book_title: str, first_chapter_text: str) -> str:
     """组装全书 thin 概要消息（基于首章，100-200 字）。"""
     return (

@@ -37,7 +37,6 @@ def test_reference_roundtrip_and_no_source_copy(tmp_path) -> None:
         source_path=str(tmp_path / "novel.txt"),
         chapter_count=40,
         total_plot_points=1600,
-        aggregation=None,
     )
     store.save_reference(project)
     loaded = store.get("reference-book-1")

@@ -3,8 +3,11 @@
 边界声明：
 - 它只做"句子切分 + 关键词映射 + 原文锚点"，绝不冒充真实语义抽取；
 - 产物一律标记 model_id='rule:fake'，禁止用于任何真实拆书效果宣称；
-- 学习层 takeaways 永远为空（红线：工具不代笔评论）；
-- 用途仅限于：无 key 跑通管道、契约测试、输出格式演示。
+- 用途仅限于：无 key 跑通摘要链路、契约测试、输出格式演示。
+
+2026-11-14 起只剩 `summarize_chapter`：旧拆书管道的 `thin_summary` 与
+`golden_report` 随管道一起退役（这两个方法原先只被 `pipeline/runner.py`
+与 `cli.py analyze` 调用，两者都已删除）。
 """
 
 from __future__ import annotations
@@ -13,13 +16,7 @@ import re
 
 from ndecon.domain.enums import ThemeTag, Tone
 from ndecon.domain.ids import chapter_id
-from ndecon.domain.models import (
-    ChapterSummary,
-    GoldenChapterReport,
-    PlotPoint,
-    SourceRef,
-    StructureBeat,
-)
+from ndecon.domain.models import ChapterSummary, PlotPoint, SourceRef
 
 # 句末标点切句（保留省略号与换行作为句子边界）
 _SENTENCE = re.compile(r"[^。！？!?…\n]+(?:[。！？!?…]+|$)")
@@ -102,15 +99,6 @@ class FakeProvider:
     name = "rule:fake"
     prompt_version = "fake-v0"
 
-    def thin_summary(self, first_chapter_text: str, book_title: str) -> str:
-        """取首章正文第一句作为 thin 概要候选（明确是规则截取，非语义概括）。"""
-        body, base = _strip_title_line(first_chapter_text)
-        sentences = _iter_sentences(body, base)
-        if not sentences:
-            return f"《{book_title}》（fake：首章无可用句子）"
-        first = sentences[0][2]
-        return f"【fake 首句锚点】{first[:120]}"
-
     def summarize_chapter(
         self, order: int, title: str, chapter_text: str, chapter_hash: str
     ) -> ChapterSummary:
@@ -143,32 +131,4 @@ class FakeProvider:
             gist=gist,
             plot_points=plot_points,
             characters=[],
-        )
-
-    def golden_report(
-        self, order: int, title: str, chapter_text: str, chapter_hash: str
-    ) -> GoldenChapterReport:
-        """以首句/末句作为钩子与章尾的原文锚点，结构段取前三个情节点。
-
-        opening_hook_note 明确标注未经语义分析；takeaways 留空（不代笔评论）。
-        """
-        summary = self.summarize_chapter(order, title, chapter_text, chapter_hash)
-        first_quote = summary.plot_points[0].source.quote if summary.plot_points else ""
-        last_quote = summary.plot_points[-1].source.quote if summary.plot_points else ""
-        beats = [
-            StructureBeat(name=f"段落{p.index}", note=p.summary)
-            for p in summary.plot_points[:3]
-        ]
-        return GoldenChapterReport(
-            model_id=self.name,
-            prompt_version=self.prompt_version,
-            chapter_id=chapter_id(order),
-            order=order,
-            title=title,
-            opening_hook_quote=first_quote,
-            opening_hook_note="fake：以章首原句作为钩子锚点，未经语义分析",
-            worldview_revealed=[],
-            structure_beats=beats,
-            cliffhanger_quote=last_quote,
-            takeaways=[],
         )

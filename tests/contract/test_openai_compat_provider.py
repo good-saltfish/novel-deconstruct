@@ -172,24 +172,6 @@ def test_markdown_fence_is_tolerated_but_garbage_raises() -> None:
         provider_bad.summarize_chapter(1, "雨夜归人", CHAPTER, chapter_hash="h")
 
 
-def test_golden_report_never_accepts_takeaways() -> None:
-    """即使模型擅自返回 takeaways，也必须被物理丢弃；锚定失败的可选 quote 置空计数。"""
-    payload = {
-        "opening_hook_note": "以雨夜红衣归家的画面开场。",
-        "opening_quote": "陈默推开木门，雨水顺着戏袍滴落。",
-        "worldview_revealed": ["存在油灯等退化设施"],
-        "structure_beats": [{"name": "归家", "note": "陈默推门进屋"}],
-        "cliffhanger_quote": "原文中不存在的章尾句子啊啊啊",
-        "takeaways": ["1. 末句反转法值得学习"],  # 模型越界产出的评论
-    }
-    provider, _ = _make_provider(lambda _r: _chat_response(payload))
-    report = provider.golden_report(1, "雨夜归人", CHAPTER, chapter_hash="h")
-    assert report.takeaways == []
-    assert report.opening_hook_quote
-    assert report.cliffhanger_quote == ""
-    assert provider.diagnostics.empty_optional_quotes == 1
-
-
 def test_read_timeout_becomes_transport_error() -> None:
     """读超时必须归类成 ProviderTransportError，而不是裸抛 httpx 异常。
 
