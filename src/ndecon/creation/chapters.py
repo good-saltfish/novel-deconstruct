@@ -138,13 +138,19 @@ def style_card(target_chars: int = 0) -> str:
     body = total("身体外化密度")
     clause = limits.get("分句均字")
     single = limits.get("单句段占比")
-    para = limits.get("段均句数")
+    para_p90 = limits.get("段p90字")
 
     lines = ["\n【笔法约束（数字来自 67 本真实网文 5829 章的实测分布，不是口味偏好）】"]
     if single is not None:
         lines.append(
-            f"1. 分段：至少 {single:.0%} 的段落只有一句话，一句话就换行。"
-            "真实网文靠空行制造停顿；把三四句挤进一段会把节奏压平。"
+            f"1. 分段：大部分段落一句话就换行（人类中位是 {single:.0%} 的段落只有一句），"
+            "但**这不是上限**。真实网文是长短剧烈交替："
+            "平均每三四段就要有一段把 2–4 句连起来写（六十字到一百二十字），"
+            "用来承载推演、因果、连续动作。"
+            "\n   ——把所有段落都压成一句话，是这道要求最省事也最糟的解法："
+            "那会让一整章都变成同一口气的短句鼓点，读起来像提纲不像小说。"
+            f"\n   ——判断标准：整章段落长度的 90 分位（把段落按长短排，站到前 10% 那一档）"
+            f"要达到 {para_p90 or 40:.0f} 字上下。如果最长的一段只有三十来字，说明长段被删光了。"
         )
     if dash is not None:
         lines.append(
@@ -161,11 +167,9 @@ def style_card(target_chars: int = 0) -> str:
             f"4. 断句：逗号之间的平均字数不低于 {clause:.0f} 字。"
             "别把一句话切成一串四个字的碎片——那是均匀的鼓点，不是人说话。"
         )
-    if para is not None:
-        lines.append(
-            "5. 结尾：用动作或对话收尾，不要总结、升华、点题。"
-            f"（顺带：单段平均句数别超过 {para:.1f} 句。）"
-        )
+    lines.append(
+        "5. 结尾：用动作或对话收尾，不要总结、升华、点题。"
+    )
     lines.append(
         "6. 允许「平」的句子存在：推进动作和信息时不要每句都加比喻、身体反应或"
         "精确读数。一章里必须有一部分句子是老实交代，全章都在描写就已经是 AI 味。"
@@ -211,12 +215,21 @@ def _dialogue_card(budget: int) -> list[str]:
 
     lines: list[str] = []
     per_k = limits.get("对白条数每千字")
+    dlg_len = limits.get("对白句均字")
     if per_k is not None:
         budget_lines = max(8, int(round(per_k * budget / 1000)))
         lines.append(
-            f"8. 台词要碎：整章引号台词不超过 {budget_lines} 条（人类中位是每千字 "
+            f"8. 台词条数：整章引号台词不超过 {budget_lines} 条（人类中位是每千字 "
             f"{per_k:.0f} 条）。别让每个回合都写成「说完一句、对方再答一句」的完整对话。"
         )
+        if dlg_len is not None:
+            lines.append(
+                f"   但**不要靠把台词切碎来凑条数**。真人一句台词平均 {dlg_len:.0f} 字"
+                "（人类里最短的那 1% 才降到 6 字）。"
+                "「嗯。」「走吧。」「好。」这种两三个字的应答，整章最多两三次；"
+                "大部分台词应该是一句完整的话——带条件、带情绪、带话里有话。"
+                "\n   判断标准：随便挑五条台词，如果三条以上都在十个字以内，就是碎了。"
+            )
     dash_ratio = limits.get("对白破折号占比")
     if dash_ratio is not None:
         lines.append(

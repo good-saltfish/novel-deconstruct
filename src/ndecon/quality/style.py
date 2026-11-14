@@ -461,6 +461,18 @@ def _evidence(text: str, metric: str) -> str:
         for para in paras:
             if len([s for s in _SENT_RE.findall(para) if cjk_count(s) >= 2]) >= 3:
                 return para[:60]
+    if metric == "段p90字":
+        # 这条判据的意思是「长段被删光了」，所以要举最长的那个多句段当反证：
+        # 人类章里它通常有六十到一百二十字。
+        multi = [
+            p
+            for p in paras
+            if len([s for s in _SENT_RE.findall(p) if cjk_count(s) >= 2]) >= 2
+        ]
+        if multi:
+            longest = max(multi, key=cjk_count)
+            return f"（最长多句段只有 {cjk_count(longest)} 字）{longest[:50]}"
+        return "（整章没有一个两句话以上的段落，长段被全部删掉）"
     if metric == "单句段占比":
         return "（整章多数段落是多句连排，没有用空行分句）"
     if metric == "分句均字":

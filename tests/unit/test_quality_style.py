@@ -27,10 +27,15 @@ from ndecon.quality.style import (
 
 
 def _humanish(chars: int = 1200) -> str:
-    """造一段节奏接近人类网文的正文：短句成段、逗号里字够多、无破折号、无身体外化。
+    """造一段节奏接近人类网文的正文：短句成段为主，但长短交替、句内逗号够长、无破折号。
 
     每句都必须以句末标点收尾、每行必须独立成段——这两条不是排版讲究，
     而是 ``paragraphs_of`` 的口径：没有句末标点的行会被并进下一行。
+
+    为什么不能全篇一行一句：那样段p90字只有 25，落在人类 p10 线（35）以下。
+    人类作者即使 96% 的段落只有一句，段长 90 分位的中位仍有 45 字、最长段
+    能到 120 字（32575 章实测）。「全部压成一句一段」是模型为了满足分段要求
+    走的退化解，不是人类形态，拿它当人类范本等于用假阴性养着假指标。
     """
     sentences = [
         "他把那份合同翻到第二页看了一遍，月薪四千，试用期三个月",
@@ -40,11 +45,16 @@ def _humanish(chars: int = 1200) -> str:
         "苏晚推门进来，手里抱着一叠打印纸，边走边数还剩下多少",
         "走廊尽头的灯忽明忽暗，把两个人的影子拉得很长很长",
     ]
+    # 每 8 段一个循环：六个单句段、一个两句段、一个四句段。长段占 12.5%，
+    # 刚好压过 p90 那个位置——剩下的仍是最常见的「一句话一段」。
+    pattern = (1, 1, 1, 2, 1, 1, 1, 4)
     out: list[str] = []
     index = 0
     while cjk_count("\n".join(out)) < chars:
-        out.append(sentences[index % len(sentences)] + "。")
-        index += 1
+        size = pattern[len(out) % len(pattern)]
+        chunk = [sentences[(index + i) % len(sentences)] for i in range(size)]
+        index += size
+        out.append("".join(s + "。" for s in chunk))
     return "\n".join(out)
 
 
@@ -88,10 +98,12 @@ def test_metrics_are_on_the_baseline_scale() -> None:
     metrics = measure(_humanish(1200))
     # 分句均字：人类中位 8.8，造出来的句子逗号前都有 8 字以上
     assert metrics["分句均字"] >= 7.5
-    # 单句成段落：一行一句，占比接近 1
-    assert metrics["单句段占比"] >= 0.9
-    # 段均句数：一行一句
-    assert metrics["段均句数"] <= 1.2
+    # 短句成段为主，但留了长段：单句段占比高、又不至于 1.0（人类 p50=0.91）
+    assert 0.6 <= metrics["单句段占比"] <= 0.95
+    # 段均句数随之略高于 1，仍在人类分布内（人类 p95=1.62）
+    assert 1.0 <= metrics["段均句数"] <= 1.62
+    # 段长 90 分位要越过人类 p10 线（35），否则就是「长段被删光」的退化解
+    assert metrics["段p90字"] >= 35
     # 没有破折号
     assert metrics["破折号密度"] == 0.0
 
@@ -162,7 +174,7 @@ def test_baseline_meta_declares_holdout() -> None:
     # 留出集必须存在且不参与定阈值，否则误杀率是自己评自己
     assert meta["holdout_books"] >= 10
     assert meta["holdout_chapters"] >= 1000
-    assert len(meta["rules"]) == 5
+    assert len(meta["rules"]) == 6
 
 
 def test_prompt_rules_match_baseline_numbers() -> None:
@@ -198,14 +210,14 @@ def test_dialogue_metrics_are_skipped_when_chapter_has_no_quotes() -> None:
     report = inspect_style(_humanish(1200))
     assert report.dialogue_checked is False
     assert report.dialogue_metrics == {}
-    assert report.rule_count == 5  # 只有节奏五条参与比对
+    assert report.rule_count == 6  # 只有节奏六条参与比对
 
 
 def test_dialogue_metrics_join_the_comparison_when_quotes_exist() -> None:
-    """有对白时判据数从 5 变 8，且对白指标落进 metrics。"""
+    """有对白时判据数从 6 变 10，且对白指标落进 metrics。"""
     report = inspect_style(_dialogueish(1200))
     assert report.dialogue_checked is True
-    assert report.rule_count == 8
+    assert report.rule_count == 10
     for metric in ("对白条数每千字", "对白破折号占比", "对白第二人称密度"):
         assert metric in report.metrics
         assert metric in report.dialogue_metrics
@@ -221,13 +233,26 @@ def test_dialogue_findings_point_at_the_offending_line() -> None:
 
 
 def test_dialogue_rule_limits_have_two_scales() -> None:
-    """对白判据同样是「瞄准紧、判罚松」，且三条都是「越高越差」。"""
+    """对白判据同样是「瞄准紧、判罚松」，但方向不全是「越高越差」。
+
+    ``对白句均字`` 是 lo 向（管「台词被切碎」）：人类典型值 17.7 字，
+    判罚线在 p1=6.5。所以「prompt 一定小于 limit」只对 hi 向成立，
+    这里按方向分别验，避免把方向写死。
+    """
     judge = dialogue_rule_limits("judge")
     prompt = dialogue_rule_limits("prompt")
     assert judge.keys() == prompt.keys()
-    assert set(judge) == {"对白破折号占比", "对白条数每千字", "对白第二人称密度"}
+    assert set(judge) == {
+        "对白破折号占比",
+        "对白条数每千字",
+        "对白第二人称密度",
+        "对白句均字",
+    }
     for metric, limit in judge.items():
-        assert prompt[metric] < limit, metric
+        if metric == "对白句均字":
+            assert prompt[metric] > limit, metric
+        else:
+            assert prompt[metric] < limit, metric
 
 
 def test_dialogue_baseline_is_declared_separately() -> None:
@@ -238,6 +263,6 @@ def test_dialogue_baseline_is_declared_separately() -> None:
     assert dialogue["version"] == "style-dlg-v1"
     assert dialogue["books"] >= 50
     assert dialogue["holdout_chapters"] >= 1000
-    assert len(dialogue["rules"]) == 3
-    # 主表仍然是那五条节奏判据——混表会让「本基线来自 67 本 5829 章」变成假话
-    assert len(meta["rules"]) == 5
+    assert len(dialogue["rules"]) == 4
+    # 主表是六条节奏判据——混表会让「本基线来自 67 本 5829 章」变成假话
+    assert len(meta["rules"]) == 6

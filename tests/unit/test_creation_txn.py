@@ -443,8 +443,26 @@ def _sentences(chars: int = 2600) -> list[str]:
 
 
 def _human_chapter() -> str:
-    """人类腔：一行一句。实测基线里 5 条判据全部落在人类分布内。"""
-    return "\n".join(_sentences())
+    """人类腔：绝大多数段落一句话，但每隔几段留一段把 2–4 句连起来写。
+
+    为什么不能「一行一句」到底：那样段p90字只有 19，落在人类 p10 线（35）以下。
+    人类作者的真实形态是**长短剧烈交替**——即使 96% 的段落只有一句，段长的
+    90 分位中位仍有 45 字、最长段能到 120 字（32575 章实测）。全篇一句一段
+    是「把长段删光」这一退化解的形态，不是人类形态，拿它当人类范本会让
+    「文风越界清零」这条断言退化成「只要全是短句就算干净」。
+    """
+    sentences = _sentences()
+    # 每 8 段一个循环：六个单句段 + 一个两句段 + 一个四句段。
+    # 长段占 12.5%，压过 p90 那个位置（否则 p90 还是落在单句段上，等于没改）。
+    pattern = (1, 1, 1, 2, 1, 1, 1, 4)
+    lines: list[str] = []
+    cursor = 0
+    while cursor < len(sentences):
+        size = pattern[len(lines) % len(pattern)]
+        chunk = sentences[cursor : cursor + size]
+        lines.append("".join(chunk))
+        cursor += len(chunk)
+    return "\n".join(lines)
 
 
 def _ai_chapter() -> str:
