@@ -21,7 +21,7 @@ from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band
 from ndecon.retrieval.context import ContextPack
 
-CHAPTER_PROMPT_VERSION = "cw-v1"
+CHAPTER_PROMPT_VERSION = "cw-v2"
 
 # 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
 CHAPTER_SCENE_SEED = 20261101
