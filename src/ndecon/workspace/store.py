@@ -14,9 +14,9 @@ import shutil
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ndecon.domain.creation import CHAPTER_ORDER_MAX
-from ndecon.retrieval.bm25 import BM25Index
 from ndecon.workspace.atomic import (
     atomic_write_json,
     atomic_write_text,
@@ -28,6 +28,9 @@ from ndecon.workspace.models import (
     ProjectMeta,
     ReferenceProject,
 )
+
+if TYPE_CHECKING:  # 只为类型注解，运行时不导入：retrieval 反过来依赖 workspace
+    from ndecon.retrieval.bm25 import BM25Index
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_\-一-鿿]{1,64}$")
 # 项目内 JSON 产物文件名白名单（如检索索引 index.json），杜绝目录穿越写法
@@ -299,6 +302,10 @@ class WorkspaceStore:
 
         t3 缺陷 #2 修复：reindex 此前只写不读（死写）。本方法让运行时能真正消费
         该索引；CLI 仍保持"显式按需重建"语义（不引入常驻向量/索引服务）。
+
+        `BM25Index` 只在真正要还原索引时才导入：`retrieval` 包反过来依赖
+        `workspace.models`（它要 `CreationProject` / `is_usable`），顶层导入会让
+        两个包互相拉进一个循环。类型注解走 `TYPE_CHECKING`，运行时零成本。
         """
         import json
 

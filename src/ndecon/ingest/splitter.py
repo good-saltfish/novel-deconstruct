@@ -127,6 +127,19 @@ def _is_title_line(line: str) -> tuple[int, str] | None:
     return cn_chapter_to_int(number_token), title
 
 
+def strip_title_line(chapter_text: str) -> tuple[str, int]:
+    """去掉章节文本的标题行，返回 (正文, 正文起始偏移)。
+
+    全仓只有这一份：拆书侧（`deconstruct/pipeline.py`）与摘要侧
+    （`providers/fake.py`）都在用。偏移必须与原切片同一坐标系——两边各写
+    一份的日子已经出过偏差风险，所以提到这里共用一个实现。
+    """
+    newline = chapter_text.find("\n")
+    if newline < 0:
+        return chapter_text, 0
+    return chapter_text[newline + 1 :], newline + 1
+
+
 def split_chapters(text: str) -> SplitResult:
     """扫描全文，按行识别章节标题并产出边界表与告警。
 

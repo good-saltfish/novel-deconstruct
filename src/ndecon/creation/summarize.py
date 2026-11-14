@@ -32,6 +32,13 @@ def content_hash(text: str) -> str:
 
     不用内置 ``hash()``：它在 str 上加了随机种子，重启一次就变，任何靠它做的
     缓存命中、版本去重、证据回指都会在下次启动时错位。
+
+    刻意与 ``ndecon.domain.ids.content_hash`` 不同，两者不要合并：
+    - 这里（创作侧）算的是**原样正文**取前 16 位——它只用来区分同项目内的章节
+      版本、把 run record 串起来，越短越好，不做跨机器复算比对；
+    - ``domain.ids`` 那个先 ``normalize_for_hash``（统一空白与全半角）再取全 64 位
+      ——拆书产物的 quote 偏移要靠它在「源文件被轻微改写过」时仍能判等。
+    一个要「同文本同 hash」，一个要「同内容同 hash」，语义不同。
     """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:CHAPTER_HASH_LEN]
 

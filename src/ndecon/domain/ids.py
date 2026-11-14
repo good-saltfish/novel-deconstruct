@@ -32,5 +32,13 @@ def normalize_for_hash(text: str) -> str:
 
 
 def content_hash(text: str) -> str:
-    """计算归一化文本的 SHA-256 十六进制指纹。"""
+    """计算归一化文本的 SHA-256 十六进制指纹（全 64 位）。
+
+    先过 ``normalize_for_hash``（统一换行、合并多余空行、去首尾空白）再取全量
+    摘要：拆书产物的 quote 偏移要能在「源文件被轻微改写过」的情况下判等，
+    所以这里要的是「同内容同 hash」，不是「同文本同 hash」。
+
+    与 ``ndecon.creation.summarize.content_hash`` 刻意不同（那个是原样正文取前
+    16 位，只用于同项目内的章节版本区分），两者不要合并。
+    """
     return hashlib.sha256(normalize_for_hash(text).encode("utf-8")).hexdigest()

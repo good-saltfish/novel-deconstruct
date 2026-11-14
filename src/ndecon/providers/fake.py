@@ -17,6 +17,7 @@ import re
 from ndecon.domain.enums import ThemeTag, Tone
 from ndecon.domain.ids import chapter_id
 from ndecon.domain.models import ChapterSummary, PlotPoint, SourceRef
+from ndecon.ingest.splitter import strip_title_line
 
 # 句末标点切句（保留省略号与换行作为句子边界）
 _SENTENCE = re.compile(r"[^。！？!?…\n]+(?:[。！？!?…]+|$)")
@@ -34,14 +35,6 @@ _THEME_KEYWORDS = (
     (("修", "级", "练"), ThemeTag.GROWTH),
     (("谁", "谜", "为何"), ThemeTag.SUSPENSE),
 )
-
-
-def _strip_title_line(chapter_text: str) -> tuple[str, int]:
-    """去掉章节文本的标题行，返回 (正文, 正文起始偏移)。"""
-    newline = chapter_text.find("\n")
-    if newline < 0:
-        return chapter_text, 0
-    return chapter_text[newline + 1 :], newline + 1
 
 
 def _iter_sentences(body: str, base_offset: int) -> list[tuple[int, int, str]]:
@@ -103,7 +96,7 @@ class FakeProvider:
         self, order: int, title: str, chapter_text: str, chapter_hash: str
     ) -> ChapterSummary:
         """切句后均匀采样至情节点上限，逐句生成带证据的情节点。"""
-        body, base = _strip_title_line(chapter_text)
+        body, base = strip_title_line(chapter_text)
         sentences = _iter_sentences(body, base)
         if len(sentences) > _MAX_PLOT_POINTS:
             step = len(sentences) / _MAX_PLOT_POINTS

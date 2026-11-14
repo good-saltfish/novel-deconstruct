@@ -144,7 +144,12 @@ def _cjk_count(text: str) -> int:
 
 
 def _evidence(text: str, limit: int = 3, width: int = 40) -> list[str]:
-    """截一小段原文做证据：太长没人看，太短定位不到。"""
+    """截一小段原文做证据：太长没人看，太短定位不到。
+
+    与 ``quality.style._evidence`` 同名但语义不同、不要合并：这个返回 ``list[str]``
+    （硬门讲「哪几处违规」，可能多处），那个返回 ``str``（文风判据讲「命中哪一段」，
+    一段就够）。同包不同模块，各管各的调用点。
+    """
     clean = re.sub(r"\s+", " ", text).strip()
     if not clean:
         return []

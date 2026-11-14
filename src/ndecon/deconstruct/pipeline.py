@@ -27,6 +27,7 @@ from ndecon.domain.deconstruction import (
     ConflictAnchor,
     HookLedgerEntry,
 )
+from ndecon.ingest.splitter import strip_title_line
 
 RULE_MODEL_ID = "rule:deconstruct"
 RULE_PROMPT_VERSION = "rule-v0"
@@ -58,16 +59,8 @@ _UNSAFE_FILENAME = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff._-]+")
 
 
 def _char_count(text: str) -> int:
-    """去空白字数（与 pipeline.stage0 同一口径）。"""
+    """去空白字数（与 quality.style.cjk_count 同为「不算空白与换行」口径）。"""
     return len(_WS.sub("", text))
-
-
-def _strip_title_line(chapter_text: str) -> tuple[str, int]:
-    """去掉章节文本的标题行，返回 (正文, 正文起始偏移)。"""
-    newline = chapter_text.find("\n")
-    if newline < 0:
-        return chapter_text, 0
-    return chapter_text[newline + 1 :], newline + 1
 
 
 def measure_chapter(
@@ -81,7 +74,7 @@ def measure_chapter(
     from ndecon.deconstruct.signals import CLASH_LEXICON, has_dialogue, split_sentences
 
     del title  # 客观层不依赖标题语义
-    body, base = _strip_title_line(chapter_text)
+    body, base = strip_title_line(chapter_text)
 
     sentences = split_sentences(body, base)
     from ndecon.domain.ids import chapter_id, content_hash

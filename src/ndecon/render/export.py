@@ -77,7 +77,13 @@ class ExportResult:
 
 
 def paragraphs_of(text: str) -> tuple[str, ...]:
-    """把正文切成段落：按空行分，去掉首尾空白与空段。"""
+    """把正文切成段落：按空行分，去掉首尾空白与空段。
+
+    名字与 ``ndecon.quality.style.paragraphs_of`` 撞了，但**口径必须不同、不能合并**：
+    这里按空行切（排版要的是作者自己敲出来的分段，一行一段会让 docx/epub 里
+    每句话都变成一个缩进段落），判据那边按句末标点并入（要测的是作者的分段意图）。
+    顺序也不能换：先剔 XML 非法控制字符，否则 DOCX 会被 Word 判「文件已损坏」。
+    """
     cleaned = _INVALID_XML.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
     parts = (part.strip() for part in _PARAGRAPH_SPLIT.split(cleaned))
     return tuple(part for part in parts if part)

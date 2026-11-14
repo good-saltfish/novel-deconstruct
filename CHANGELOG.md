@@ -53,6 +53,18 @@
 
 - **`CreationProject.summaries` 死字段**：摘要在 `cb925b6` 就已外置到 `summaries/chNNN.json`，但模型上仍留着这个字段，生成链路从不写它——`agent/tools.py` 据此读它，`SearchOwnBook` 拿到的永远是空列表，等于「已写章节入索引」那次修复从未生效。现在字段删除，`ToolContext.summaries` + `run_planner(summaries=...)` 由调用方显式传入；旧工作区的内联摘要由 `WorkspaceStore.get()` 在反序列化**之前**从裸 dict 取走并搬盘（顺序不能换：pydantic `extra="ignore"` 会先静默吞掉该键）。
 
+### Changed
+
+- **同一个函数名在三处各写了一遍（有的能合，有的必须分开，逐个判过）**：全仓重名 `def` 扫出五组，逐组给结论——只说「合并」或「保留」不讲为什么，下次还会长回来。
+  ① `_strip_title_line`（`deconstruct/pipeline.py:65` 与 `providers/fake.py:39`）**逐字相同**：都是找第一个 `\n`、返回 `(正文, newline+1)`、无换行返回 `(原文, 0)`。已提到 `ingest/splitter.py` 的公开 `strip_title_line()`，两边都改成 import。它算的是「章切片内绝对偏移」，两边各写一份迟早出现偏移口径不一致，而偏移错了 quote 就定位到错误位置——这种错在测试里很难看出来。
+  ② `content_hash` **名字一样、语义必须不同，不能合并**：`creation/summarize.py:30` 是原样正文取 SHA-256 前 16 位（只用于同项目内区分章节版本、串 run record，越短越好）；`domain/ids.py:34` 先 `normalize_for_hash` 再取全 64 位（拆书 quote 的偏移要能在源文件被轻微改写后仍判等，要的是「同内容同 hash」）。两个都加了注释说明对方存在、以及合并会坏在哪里。
+  ③ `paragraphs_of` **名字一样、口径必须不同，不能合并**：`quality/style.py:237` 按句末标点并入（判据要作者的真实分段意图，`_MAX_PARA_CHARS=400` 兜底），`render/export.py:79` 按空行切（排版要作者自己敲出来的分段）。两边都加了注释点名另一个的存在——用错一边，要么段均句数/单句段占比整套判据失准，要么导出的 docx 里每句话变成一段。
+  ④ `_evidence` **同名不同返回类型，各管各的**：`quality/gates.py:146` 返 `list[str]`（硬门要讲「哪几处违规」），`quality/style.py:438` 返 `str`（文风判据只讲「命中哪一段」）。同包不同模块，不构成冲突，只在 docstring 里点名区分。
+  ⑤ `_char_count` 只剩 `deconstruct/pipeline.py:60` 一处（原 `pipeline/stage0.py` 那份随退役删掉），docstring 里的「与 stage0 同一口径」已同步改成「与 `quality.style.cjk_count` 同为不算空白与换行口径」。
+
+- **`workspace` 与 `retrieval` 的循环依赖真正断掉了**：`workspace/store.py` 顶层 `from ndecon.retrieval.bm25 import BM25Index` 只为给 `load_project_index()` 写返回类型注解，而 `retrieval` 包反过来要 `workspace.models`（`CreationProject` / `is_usable`）——两个包互相拉进一个环。改法是把顶层 import 换成 `if TYPE_CHECKING:`（类型注解照常有、运行时不导入），方法内那一处 import 保留（它本来就该延迟到真正要还原索引时）。实测 `import ndecon.workspace.store` 后 `ndecon.retrieval.bm25` 不在 `sys.modules` 里，说明环真的断了，而不只是「碰巧没炸」。
+
+
 ## [0.2.0] - 2026-10-01
 
 ### Fixed

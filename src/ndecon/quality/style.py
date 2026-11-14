@@ -239,6 +239,11 @@ def paragraphs_of(text: str) -> list[str]:
 
     不能按空行切：大量网文 txt 是单换行分段，按空行切会把一整章切成一坨，
     段均句数、单句段占比两个判据当场失效——建基线时踩过这个坑。
+
+    名字与 ``ndecon.render.export.paragraphs_of`` 撞了，但**口径必须不同、不能合并**：
+    这里按句末标点判定（判据要的是作者的真实分段意图），导出那边按空行切
+    （排版要的是作者自己敲出来的分段）。用错一边，要么判据失准，要么导出的段落
+    被挤成一整坨。
     """
     lines = [ln.strip() for ln in text.split("\n")]
     lines = [ln for ln in lines if ln and not _NOISE_RE.match(ln)]
@@ -431,7 +436,12 @@ def _percentile_of(value: float, metric: str, *, block: str = "") -> float:
 
 
 def _evidence(text: str, metric: str) -> str:
-    """取一条最能说明问题的原文片段：命中该指标的那一段。"""
+    """取一条最能说明问题的原文片段：命中该指标的那一段。
+
+    与 ``quality.gates._evidence`` 同名但语义不同、不要合并：这个返回 ``str``
+    （文风判据只讲「命中哪一段」，一段就够，重写时也只需要一段做示范），
+    那个返回 ``list[str]``（硬门要讲「哪几处违规」）。
+    """
     patterns = {
         "破折号密度": _DASH_RE,
         "身体外化密度": _BODY_RE,
