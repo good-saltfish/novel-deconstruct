@@ -14,7 +14,7 @@ from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.workspace.models import CreationProject
 from ndecon.workspace.store import WorkspaceStore
 
-app = typer.Typer(help="本地优先的中文网文拆书 CLI", no_args_is_help=True)
+app = typer.Typer(help="中文网文拆书 + 创作引擎", no_args_is_help=True)
 
 
 def _read_text(path: Path) -> str:
