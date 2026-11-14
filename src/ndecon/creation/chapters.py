@@ -21,7 +21,7 @@ from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band
 from ndecon.retrieval.context import ContextPack
 
-CHAPTER_PROMPT_VERSION = "cw-v2"
+CHAPTER_PROMPT_VERSION = "cw-v3"
 
 # 占位正文的按章随机种子：固定基数 + 每章步进，同章可复现、异章不撞车。
 CHAPTER_SCENE_SEED = 20261101
@@ -144,13 +144,15 @@ def style_card(target_chars: int = 0) -> str:
     if single is not None:
         lines.append(
             f"1. 分段：大部分段落一句话就换行（人类中位是 {single:.0%} 的段落只有一句），"
-            "但**这不是上限**。真实网文是长短剧烈交替："
-            "平均每三四段就要有一段把 2–4 句连起来写（六十字到一百二十字），"
-            "用来承载推演、因果、连续动作。"
-            "\n   ——把所有段落都压成一句话，是这道要求最省事也最糟的解法："
-            "那会让一整章都变成同一口气的短句鼓点，读起来像提纲不像小说。"
-            f"\n   ——判断标准：整章段落长度的 90 分位（把段落按长短排，站到前 10% 那一档）"
-            f"要达到 {para_p90 or 40:.0f} 字上下。如果最长的一段只有三十来字，说明长段被删光了。"
+            "但**这不是上限**。真实网文是长短剧烈交替，段落长度要有完整的光谱："
+            "\n   ——六十字以上的长段，一章里要占到**一成左右**（一百段的章就是十段上下）。"
+            "这种段承载推演、因果、连续动作、前世记忆，是让人读下去的主力；"
+            "\n   ——二十五到六十字的中段占四成，交代与过场用它；"
+            "\n   ——十字以下的极短段（「陈默摇头。」这种）不超过两成。"
+            "短段是鼓点，鼓点连成一片就成了噪音——全章都是三五字的段，读起来像提纲不像小说。"
+            f"\n   ——判断标准：整章段落长度的 90 分位要达到 {para_p90 or 48:.0f} 字上下。"
+            "如果最长的一段只有三十来字，说明长段被删光了。"
+            "\n   ——把所有段落都压成一句话，是这道要求最省事也最糟的解法。"
         )
     if dash is not None:
         lines.append(
