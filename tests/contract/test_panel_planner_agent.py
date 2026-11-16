@@ -26,8 +26,19 @@ def _create_project_with_skeleton(server) -> str:
 
 
 def test_fake_expand_chapter_run_via_api(server) -> None:
-    """API 跑 Fake 扩章：返回 trace、4 节拍，候选尚未入权威细纲。"""
+    """API 跑 Fake 扩章：返回 trace、4 节拍，候选尚未入权威细纲。
+
+    「尚未入」的比较基准是**跑之前**的那份细纲，不是「beats 为空」：
+    2026-11-16 起 Fake 骨架自己就带 4 拍（离线路径也要能演练节拍进 prompt），
+    所以空数组不再是初始状态的正确描述。契约本身没变——跑完 agent 之后，
+    权威细纲必须一个字都没动。
+    """
     pid = _create_project_with_skeleton(server)
+    _, before = api_request(server, "GET", f"/api/projects/{pid}")
+    before_beats = {
+        c["order"]: c["beats"] for c in before["draft"]["chapters"]
+    }
+
     status, result = api_request(
         server, "POST", f"/api/projects/{pid}/agent/runs",
         {"task": "expand_chapter", "chapter_order": 2, "provider": "fake"},
@@ -38,10 +49,12 @@ def test_fake_expand_chapter_run_via_api(server) -> None:
     assert len(result["drafts"]["beats"]) == 4
     tools = [step["tool"] for step in result["trace"]]
     assert tools[0] == "get_outline" and tools[-1] == "finish"
-    # 确认前：细纲章上没有 beats
+    # 确认前：细纲章上的节拍与跑之前逐字相同（候选只在 drafts 里）
     _, project = api_request(server, "GET", f"/api/projects/{pid}")
-    chapter2 = next(c for c in project["draft"]["chapters"] if c["order"] == 2)
-    assert chapter2["beats"] == []
+    after_beats = {c["order"]: c["beats"] for c in project["draft"]["chapters"]}
+    assert after_beats == before_beats
+    # 而且候选确实是新东西，不是把原样的骨架又递回来一遍
+    assert result["drafts"]["beats"] != before_beats[2]
 
 
 def test_fake_add_settings_run_and_accept(server) -> None:
@@ -63,8 +76,13 @@ def test_fake_add_settings_run_and_accept(server) -> None:
 
 
 def test_accept_beats_attaches_to_chapter(server) -> None:
-    """节拍确认后挂到对应章节，按 order 排序。"""
+    """节拍确认后挂到对应章节，按 order 排序；其它章一个字节都不动。"""
     pid = _create_project_with_skeleton(server)
+    _, before = api_request(server, "GET", f"/api/projects/{pid}")
+    before_other = {
+        c["order"]: c["beats"] for c in before["draft"]["chapters"] if c["order"] != 3
+    }
+
     _, result = api_request(
         server, "POST", f"/api/projects/{pid}/agent/runs",
         {"task": "expand_chapter", "chapter_order": 3, "provider": "fake"},
@@ -78,9 +96,11 @@ def test_accept_beats_attaches_to_chapter(server) -> None:
     chapter3 = next(c for c in project["draft"]["chapters"] if c["order"] == 3)
     assert len(chapter3["beats"]) == 4
     assert [b["order"] for b in chapter3["beats"]] == [1, 2, 3, 4]
-    # 其他章节不受影响
-    chapter1 = next(c for c in project["draft"]["chapters"] if c["order"] == 1)
-    assert chapter1["beats"] == []
+    # 其他章节不受影响（与确认前逐字相同；Fake 骨架自带节拍，不能拿空数组当基准）
+    after_other = {
+        c["order"]: c["beats"] for c in project["draft"]["chapters"] if c["order"] != 3
+    }
+    assert after_other == before_other
 
 
 def test_agent_run_guards(server) -> None:

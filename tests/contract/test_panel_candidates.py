@@ -115,6 +115,105 @@ def test_preview_skips_placeholder_banner(server, project) -> None:
         assert not candidate["preview"].startswith("【Fake 占位正文"), candidate["preview"][:40]
 
 
+def test_candidates_carry_style_report_so_versions_are_comparable(server, project) -> None:
+    """每个候选都要带文风体检，否则"挑最优"只剩硬门 pass/fail。
+
+    这条钉的是 2026-11-16 之前的真实缺口：候选链路只跑 `check_chapter`
+    （字数/乱码/重复），从不跑 `inspect_style`。三版全部过硬门时，界面上
+    能看到的只有字数，读者只能靠眼睛判断哪一版句式更像人写的 —— 而引擎
+    明明已经有一套人类语料标定出来的判据，却在这条路径上完全没参与。
+    """
+    status, body = api_request(
+        server, "POST", f"{_base(project)}/1/candidates", {"provider": "fake", "count": 3}
+    )
+    assert status == 200, body
+    assert len(body["candidates"]) == 3
+
+    for candidate in body["candidates"]:
+        # 四个字段必须在候选载荷里，一个都不能少
+        assert "style_score" in candidate, candidate.keys()
+        assert "style_rule_count" in candidate, candidate.keys()
+        assert "style_findings" in candidate, candidate.keys()
+        assert "style_metrics" in candidate, candidate.keys()
+
+        # Fake 正文带占位横幅，_attach_style 有意跳过它（横幅每版一样，
+        # 比文风没有意义），所以这里只断言字段形状正确、不是 None：
+        assert isinstance(candidate["style_score"], (int, float))
+        assert isinstance(candidate["style_rule_count"], int)
+        assert isinstance(candidate["style_findings"], list)
+        assert isinstance(candidate["style_metrics"], dict)
+
+    # 选中后读回来还得在：落盘 JSON 里丢了等于白写
+    status, reread = api_request(server, "GET", f"{_base(project)}/1/candidates")
+    assert status == 200, reread
+    assert reread["exists"] is True
+    for candidate in reread["candidates"]:
+        assert "style_score" in candidate
+        assert "style_metrics" in candidate
+
+
+def test_style_report_reports_rule_count_and_percentile_evidence(server, project) -> None:
+    """非占位正文的候选要真的量出东西：判据条数与逐条说明都要有。
+
+    Fake 正文全是占位横幅，走不到 `inspect_style`。这里直接把一份人类形态
+    的正文喂给 `_attach_style`，确认字段真的被填上，而不是永远停在默认值
+    —— 默认值 0/0/[]/{} 看起来"有字段"，其实什么都没测。
+
+    注意 `measure()` 有长度门槛（`MIN_STYLE_CHARS = 300`，另要求至少 3 段、
+    5 句），正文太短会返回空字典。这里按「六个单句段 + 一长段 + 一长段」
+    的循环拼够量，顺带保证段p90 落在人类区间内、不会触发越界。
+    """
+    from ndecon.creation.candidates import CandidateResult, CandidateSpec, _attach_style
+    from ndecon.quality.style import cjk_count
+
+    def _paragraphs() -> list[str]:
+        short = [
+            "他推开门，屋里没人。",
+            "桌上的杯子还是温的，说明人刚走。",
+            "窗子开着一条缝，风把窗帘吹起来又落下。",
+            "地上有一道拖痕，从门口一直划到墙角。",
+            "他蹲下去看了两秒。",
+            "然后站起身。",
+        ]
+        long_a = (
+            "墙角堆着三个纸箱，最上面那个封口被撕开过，胶带翘着一角，"
+            "里面的东西已经被翻动过，但翻的人显然没找到想要的东西，"
+            "因为纸箱侧壁有被重新塞回去又压扁的痕迹，而且压痕的方向不对，"
+            "像是有人从里面往外推过。"
+        )
+        long_b = (
+            "他把纸箱拖到窗边，借着外面路灯的光看清了箱底的字，"
+            "是一串用圆珠笔写的数字，最后两位被水泡糊了，"
+            "前面几位倒还认得出，跟他口袋里那张纸条上的前几位完全一样。"
+        )
+        return short + [long_a, long_b]
+
+    out: list[str] = []
+    while cjk_count("\n".join(out)) < 900:
+        out.extend(_paragraphs())
+    human_like = "\n".join(out)
+
+    result = CandidateResult(spec=CandidateSpec(index=0, temperature=0.3, seed_offset=0))
+    _attach_style(result, human_like)
+
+    assert result.style_rule_count > 0, "非占位正文必须真的跑过判据"
+    assert isinstance(result.style_score, float)
+    assert 0.0 <= result.style_score <= 1.0
+    metrics = result.style_metrics
+    assert metrics, "指标字典不能为空"
+    # 段p90字 是这套判据里对"单薄"最敏感的一项，必须在
+    assert "段p90字" in metrics
+    assert metrics["段p90字"] > 0
+
+    # 占位正文必须跳过，否则每版都一样地"测"出同一个假结果
+    placeholder = CandidateResult(spec=CandidateSpec(index=0, temperature=0.3, seed_offset=0))
+    from ndecon.quality.gates import PLACEHOLDER_BANNER
+
+    _attach_style(placeholder, f"{PLACEHOLDER_BANNER}\n正文在此")
+    assert placeholder.style_rule_count == 0
+    assert placeholder.style_metrics == {}
+
+
 def test_select_candidate_commits_content_summary_and_cursor(server, project) -> None:
     """选中后：正文落盘、摘要生成、记录 auto-accepted、游标推进、产物回写。"""
     status, generated = api_request(

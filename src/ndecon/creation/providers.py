@@ -10,6 +10,7 @@ from typing import Protocol
 
 from ndecon.creation import prompts
 from ndecon.domain.creation import (
+    Beat,
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,
@@ -154,6 +155,7 @@ class FakeCreator:
                     if i < self.chapter_count
                     else "卷尾：更大势力现身"
                 ),
+                beats=self._chapter_beats(i),
             )
             for i in range(1, self.chapter_count + 1)
         ]
@@ -211,6 +213,33 @@ class FakeCreator:
     def _chapter_hook(order: int) -> str:
         """确定性的章首钩子模板。"""
         return f"以反常现象或一句致命对白开场（第{order}章）"
+
+    @staticmethod
+    def _chapter_beats(order: int) -> list[Beat]:
+        """确定性的四拍模板：试探→受阻→代价→转机。
+
+        离线模板同样要产节拍：`ContextPack.beats` 是从 `ChapterOutline.beats`
+        灌进 prompt 的，Fake 路径不给节拍的话，离线演练看到的正文形态会和
+        真实路径差一截——而离线路径恰恰是唯一能反复重放比对的那条。
+        """
+        beats = [
+            ("出租屋/临时落脚点", "主角清点手上还剩什么，做第一个决定"),
+            ("现场", "第一次试探性行动，吃到信息红利也踩到一个坑"),
+            ("对手出现的地方", "被更强的对手压住，被迫付出代价"),
+            ("退路", "抓住对手一次疏漏，把局势扳回一半"),
+        ]
+        result: list[Beat] = []
+        for index, (scene, event) in enumerate(beats, start=1):
+            result.append(
+                Beat(
+                    order=index,
+                    scene=scene,
+                    characters=["主角"],
+                    emotion="压" if index in (2, 3) else "转",
+                    event=f"{event}（第{order}章）",
+                )
+            )
+        return result
 
     @staticmethod
     def _chapter_ending_hook(order: int) -> str:

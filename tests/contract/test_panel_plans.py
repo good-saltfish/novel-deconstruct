@@ -154,8 +154,18 @@ def test_accept_settings_is_accumulative_not_overwrite(server):
 
 
 def test_accept_outline_candidate_attaches_beats(server):
-    """确认细纲候选：节拍挂到对应章，其余章不受影响（其余章 beats 仍为 []）。"""
+    """确认细纲候选：节拍挂到对应章，其余章一个字都不动。
+
+    「不受影响」的基准是**确认前**的那份细纲，不是「其余章 beats 为空」：
+    2026-11-16 起 Fake 骨架自己就带 4 拍（离线路径也要能演练节拍进 prompt），
+    空数组不再是初始状态的正确描述。
+    """
     project_id = _create_with_skeleton(server)
+    _, before = api_request(server, "GET", f"/api/projects/{project_id}")
+    before_by_order = {
+        chapter["order"]: chapter["beats"] for chapter in before["draft"]["chapters"]
+    }
+
     status, payload = api_request(
         server, "POST", f"/api/projects/{project_id}/plan/outline", {"provider": "fake"}
     )
@@ -175,7 +185,7 @@ def test_accept_outline_candidate_attaches_beats(server):
         assert len(by_order[order]) == len(beats)
         assert [beat["order"] for beat in by_order[order]] == list(range(1, len(beats) + 1))
     untouched = set(by_order) - set(planned)
-    assert untouched and all(by_order[order] == [] for order in untouched)
+    assert untouched and all(by_order[order] == before_by_order[order] for order in untouched)
 
 
 def test_accept_endpoints_reject_empty_and_bad_payload(server):

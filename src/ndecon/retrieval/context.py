@@ -1,7 +1,7 @@
 """生成前的确定性上下文包（#16 正文生成唯一允许携带的上下文结构）。
 
 组装规则全部确定、可单测：
-- 直接字段：本书定位/人设/金手指（仅已确认部件）+ 本章细纲；
+- 直接字段：本书定位/人设/金手指（仅已确认部件）+ 本章细纲（含节拍 beats）；
 - 紧邻前一章摘要：优先用已写章节的 Stage 2 摘要，否则退化为上一章细纲要点；
 - 相关回顾：BM25 对本书语料取 top-k，排除"本章自己"；
 - 叙事债：本章之前仍开放的伏笔列表。
@@ -13,6 +13,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from ndecon.domain.creation import (
+    Beat,
     ChapterOutline,
     GoldenFingerSpec,
     Positioning,
@@ -58,6 +59,14 @@ class ContextPack(BaseModel):
     protagonist: ProtagonistProfile | None = None
     golden_finger: GoldenFingerSpec | None = None
     chapter_outline: ChapterOutline
+    beats: list[Beat] = Field(
+        default_factory=list,
+        description=(
+            "本章细纲里的节拍（Planner Agent 确认后挂在 ChapterOutline.beats 上）。"
+            "单独拎出来一份是因为 2026-11-16 之前它从来没被渲染进 prompt："
+            "细纲里只有一句 core_event，模型每章只能靠自己猜怎么铺开。"
+        ),
+    )
     previous_summary: str = ""
     previous_summary_source: str = Field(
         description="written=已写章节摘要；outline=上一章细纲退化；none=首章无前文"
@@ -167,6 +176,7 @@ def build_context_pack(
             project.draft.golden_finger if is_usable(confirmed.get("golden_finger")) else None
         ),
         chapter_outline=target,
+        beats=list(target.beats),
         previous_summary=previous_summary,
         previous_summary_source=previous_source,
         retrieved=retrieved,

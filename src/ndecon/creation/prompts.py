@@ -103,6 +103,19 @@ def _outline_spec(chapter_count: int = 10) -> dict:
                 "core_event": "核心事件",
                 "opening_hook": "开篇钩子",
                 "ending_hook": "章尾钩子",
+                # 节拍写进一次性骨架的输出结构里：正文生成时 `context_brief` 会逐拍
+                # 渲染，模型才有"这一章按什么顺序铺开"的依据。不给节拍的话，细纲只有
+                # 一句 core_event（实测 26-60 字），模型只能自己编节奏——编出来就是
+                # 一句一段的流水账。缺省值仍是空列表，模型不给也不报错。
+                "beats": [
+                    {
+                        "order": "节拍序号（章内 1 起，每章 3-6 个）",
+                        "scene": "场景/地点（具体到能拍）",
+                        "characters": ["出场角色"],
+                        "emotion": "本节拍情绪",
+                        "event": "发生了什么（一句，必须是动作不是状态）",
+                    }
+                ],
             }
         ],
         "protagonist": {

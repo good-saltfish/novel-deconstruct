@@ -15,7 +15,7 @@ import random
 import re
 from typing import Protocol
 
-from ndecon.domain.creation import ChapterSelfReview, ChapterWriting
+from ndecon.domain.creation import Beat, ChapterSelfReview, ChapterWriting
 from ndecon.providers.errors import ProviderResponseError
 from ndecon.providers.openai_compat import OpenAICompatProvider
 from ndecon.quality.gates import CHAPTER_TARGET_CHARS_DEFAULT, PLACEHOLDER_BANNER, word_band
@@ -35,6 +35,8 @@ CHAPTER_SYSTEM_MESSAGE = """你是一名资深中文网络小说写手，为主�
 硬性要求：
 1. 只输出一个 JSON 对象，不输出任何额外文字或 markdown 代码块。
 2. 严格按"本章细纲"推进：核心事件必须发生，开篇钩与章尾钩必须落到正文里；
+   细纲里若给了"本章节拍"，就按节拍的顺序写——每一拍都要在正文里出现，
+   不许跳拍、不许把相邻两拍压成一句话带过；
    若为了叙事合理需要偏离细纲，必须在 review.deviations 中逐条说明。
 3. 正文使用中文网文白话：场景具体、对话推动、钩子前置；不写大纲、不写写作说明。
 4. 上下文只包含作者本书的资料，严禁虚构与设定冲突的能力/角色/规则。
@@ -43,6 +45,29 @@ CHAPTER_SYSTEM_MESSAGE = """你是一名资深中文网络小说写手，为主�
    （"他想了想，决定动手"）把情节赶完——那会同时拉低信息密度与字数。
 6. 同时输出结构化自评：钩子强度、信息密度（1-5）、是否贴合细纲与偏差点。
 """
+
+
+def _render_beats(beats: list[Beat]) -> str:
+    """把本章节拍渲染成 prompt 里的可执行清单；没有节拍时返回空串。
+
+    为什么单独一函数、而不是在 `context_brief` 里顺手嵌套：节拍是**唯一**
+    能告诉模型「这一章按什么顺序铺开」的东西。细纲的 core_event 只有一句
+    （实测 26-60 字），没有节拍时模型只能自己编节奏——编出来的就是「一句一段
+    的流水账」。所以这段必须能被单测直接断言（beats 非空 → 必须出现在 prompt）。
+    """
+    if not beats:
+        return ""
+    lines = ["\n【本章节拍（按顺序推进，不要跳拍也不要把两拍压成一句）】"]
+    for beat in sorted(beats, key=lambda item: item.order):
+        parts = [f"第{beat.order}拍［{beat.scene}］{beat.event}"]
+        if beat.emotion:
+            parts.append(f"情绪：{beat.emotion}")
+        if beat.characters:
+            parts.append("出场：" + "、".join(beat.characters))
+        if beat.plant_foreshadow:
+            parts.append(f"埋钩：{beat.plant_foreshadow}")
+        lines.append("- " + "；".join(parts))
+    return "\n".join(lines)
 
 
 def context_brief(pack: ContextPack) -> str:
@@ -76,6 +101,9 @@ def context_brief(pack: ContextPack) -> str:
         f"\n开篇钩：{target.opening_hook or '（细纲未指定）'}"
         f"\n章尾钩：{target.ending_hook or '（细纲未指定）'}"
     )
+    beats_block = _render_beats(pack.beats)
+    if beats_block:
+        lines.append(beats_block)
     if pack.target_chars > 0:
         # 字数要求必须显式写进 prompt：闸门按 target_chars 的 0.85-1.15 判硬门，
         # prompt 不说的话模型只会按自己的习惯写（实测真实模型 1000-1500 字），

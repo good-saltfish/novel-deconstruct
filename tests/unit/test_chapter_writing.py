@@ -10,6 +10,7 @@ from ndecon.creation.chapters import (
     context_brief,
 )
 from ndecon.domain.creation import (
+    Beat,
     ChapterOutline,
     CreationDraft,
     GoldenFingerSpec,
@@ -101,7 +102,66 @@ def test_context_pack_contains_open_foreshadow(tmp_path) -> None:
     assert "井底传来抓挠声" in brief
 
 
-def test_context_brief_has_no_reference_book_data(tmp_path) -> None:
+def test_context_brief_renders_beats_in_order(tmp_path) -> None:
+    """细纲里给了节拍，就必须按 order 逐条出现在 prompt 里。
+
+    这条锁的是 2026-11-16 之前的一个真实缺口：`ChapterOutline.beats` 能被
+    Planner Agent 生成、能被作者编辑、能在面板上显示「第 N 章 · M 拍」，
+    但从来没进过 prompt —— `ContextPack` 里根本没这个字段，`context_brief`
+    也只渲染 core_event 与两个钩子。结果是模型每章只拿到一句 26-60 字的
+    core_event，怎么铺开全靠自己猜。这是「第 1 章内容足、后面越来越单薄」
+    的另一半原因。
+    """
+    store = WorkspaceStore(tmp_path)
+    project = _creation_project(store)
+    project.draft.chapters[1].beats = [
+        Beat(order=2, scene="登记处", characters=["陈主任"], emotion="压", event="被要求签守灯人契约"),
+        Beat(order=1, scene="停电的街口", characters=["林盏"], emotion="转", event="发现路灯随心跳明灭"),
+        Beat(order=3, scene="井边", emotion="压", event="听见井底抓挠声"),
+    ]
+    pack = build_context_pack(project, 2)
+    brief = context_brief(pack)
+
+    # 整块在场
+    assert "本章节拍" in brief
+    # 三个节拍的场景与事件都在
+    assert "停电的街口" in brief and "发现路灯随心跳明灭" in brief
+    assert "登记处" in brief and "被要求签守灯人契约" in brief
+    assert "井边" in brief and "听见井底抓挠声" in brief
+    # 乱序写入时必须按 order 排好再渲染，不能照抄细纲数组顺序
+    assert brief.index("第1拍") < brief.index("第2拍") < brief.index("第3拍")
+    assert brief.index("停电的街口") < brief.index("登记处") < brief.index("井边")
+    # 情绪/出场/埋钩这些辅助字段也要带上，否则模型只能看到"发生什么"
+    assert "情绪：转" in brief and "出场：陈主任" in brief
+
+
+def test_context_brief_omits_beats_block_when_empty(tmp_path) -> None:
+    """没有节拍时不能凭空造一个空标题，那会让模型以为细纲缺失。"""
+    store = WorkspaceStore(tmp_path)
+    pack = build_context_pack(_creation_project(store), 2)
+    assert pack.beats == []
+    assert "本章节拍" not in context_brief(pack)
+
+
+def test_beat_edits_reach_the_prompt(tmp_path) -> None:
+    """改节拍必须改到 prompt：这是「节拍不是死字段」最直接的可观测断言。"""
+    store = WorkspaceStore(tmp_path)
+    project = _creation_project(store)
+    project.draft.chapters[0].beats = [
+        Beat(order=1, scene="旧场景名", event="旧事件"),
+    ]
+    before = context_brief(build_context_pack(project, 1))
+    assert "旧场景名" in before
+
+    project.draft.chapters[0].beats = [
+        Beat(order=1, scene="新场景名", event="新事件"),
+    ]
+    after = context_brief(build_context_pack(project, 1))
+    assert "新场景名" in after and "新事件" in after
+    assert "旧场景名" not in after and "旧事件" not in after
+
+
+
     """即使项目挂了参考书，章节 prompt 也不得出现参考书书名、源路径或 reference_ids。"""
     store = WorkspaceStore(tmp_path)
     secret_title = "某版权参考书密名"

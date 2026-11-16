@@ -48,6 +48,7 @@ from ndecon.creation.txn import (
 from ndecon.domain.creation import ChapterSelfReview, ManuscriptRecord
 from ndecon.providers.errors import ProviderError
 from ndecon.quality.gates import PLACEHOLDER_BANNER, check_chapter
+from ndecon.quality.style import inspect_style
 from ndecon.retrieval.context import build_context_pack
 from ndecon.workspace.atomic import read_text_with_retry
 from ndecon.workspace.models import CreationProject
@@ -107,6 +108,14 @@ class CandidateResult:
     content: str = ""
     review: dict = field(default_factory=dict)
     gate: dict = field(default_factory=dict)
+    # 文风体检：候选之间有意义的差异一半在这个维度上。
+    # 2026-11-16 之前候选链路只跑硬门（字数/乱码/重复），三版全过时界面看起来
+    # 一模一样，读者只能靠眼睛比。`style_score` 是越界项占比（越小越像人写的），
+    # `style_findings` 是逐条越界说明，`style_metrics` 里带着段p90字这类原始量。
+    style_score: float = 0.0
+    style_rule_count: int = 0
+    style_findings: list[str] = field(default_factory=list)
+    style_metrics: dict = field(default_factory=dict)
     model_id: str = ""
     prompt_version: str = ""
     content_hash: str = ""
@@ -125,6 +134,10 @@ class CandidateResult:
             "preview": _preview_text(self.content),
             "review": self.review,
             "gate": self.gate,
+            "style_score": self.style_score,
+            "style_rule_count": self.style_rule_count,
+            "style_findings": self.style_findings,
+            "style_metrics": self.style_metrics,
             "content_hash": self.content_hash,
             "elapsed_ms": self.elapsed_ms,
             "error": self.error,
@@ -182,6 +195,20 @@ def _gate_payload(report: object) -> dict:
     }
 
 
+def _attach_style(result: CandidateResult, content: str) -> None:
+    """给候选补一份文风体检；占位正文不体检（占位横幅每版都一样，比了没意义）。"""
+    if PLACEHOLDER_BANNER in content:
+        return
+    try:
+        style = inspect_style(content)
+    except Exception:  # noqa: BLE001 - 体检失败不能把候选判死
+        return
+    result.style_score = style.score
+    result.style_rule_count = style.rule_count
+    result.style_findings = style.feedback()
+    result.style_metrics = dict(style.metrics)
+
+
 def _run_one(
     spec: CandidateSpec,
     *,
@@ -234,6 +261,7 @@ def _run_one(
     result.content = content
     result.review = review.model_dump() if hasattr(review, "model_dump") else {}
     result.gate = _gate_payload(report)
+    _attach_style(result, content)
     result.content_hash = content_hash(content)
     result.elapsed_ms = int((time.monotonic() - started) * 1000)
     return result
